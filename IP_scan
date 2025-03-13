@@ -1,0 +1,141 @@
+#!/bin/bash
+
+# Couleurs pour l'affichage
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Fonction pour afficher l'ASCII art
+show_ascii_art() {
+    printf "%b███╗   ██╗███████╗████████╗██╗    ██╗ ██████╗ ██████╗ ██╗  ██╗%b\n" "$BLUE" "$NC"
+    printf "%b████╗  ██║██╔════╝╚══██╔══╝██║    ██║██╔═══██╗██╔══██╗██║ ██╔╝%b\n" "$BLUE" "$NC"
+    printf "%b██╔██╗ ██║█████╗     ██║   ██║ █╗ ██║██║   ██║██████╔╝█████╔╝ %b\n" "$BLUE" "$NC"
+    printf "%b██║╚██╗██║██╔══╝     ██║   ██║███╗██║██║   ██║██╔══██╗██╔═██╗ %b\n" "$BLUE" "$NC"
+    printf "%b██║ ╚████║███████╗   ██║   ╚███╔███╔╝╚██████╔╝██║  ██║██║  ██╗%b\n" "$BLUE" "$NC"
+    printf "%b╚═╝  ╚═══╝╚══════╝   ╚═╝    ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝%b\n" "$BLUE" "$NC"
+    printf "%b ┌─┐┌─┐┌─┐┌┐┌   ┬─┐┌─┐┌─┐┌─┐┌─┐┬ ┬%b\n" "$CYAN" "$NC"
+    printf "%b └─┐│  ├─┤│││   ├┬┘├┤ └─┐├┤ ├─┤│ │%b\n" "$CYAN" "$NC"
+    printf "%b └─┘└─┘┴ ┴┘└┘   ┴└─└─┘└─┘└─┘┴ ┴└─┘%b\n" "$CYAN" "$NC"
+    printf "%b=======================================================================%b\n" "$PURPLE" "$NC"
+    printf "%b               Détection d'équipements sur le réseau                  %b\n" "$GREEN" "$NC"
+    printf "%b                           par DeusH4ss                               %b\n" "$BLUE" "$NC"
+    printf "%b=======================================================================%b\n" "$PURPLE" "$NC"
+}
+
+# Afficher l'ASCII art au début
+show_ascii_art
+
+# Fonction pour convertir un masque en notation CIDR (ex: 255.255.255.0 → /24)
+mask_to_prefix() {
+    local mask=$1
+    local IFS=.
+    local -a octets=($mask)
+    local binary=""
+    for octet in "${octets[@]}"; do
+        binary+=$(printf "%08d" "$(bc <<< "obase=2; $octet")")
+    done
+    echo "${binary//0/}" | wc -c
+}
+
+# Fonction pour calculer l'adresse réseau
+ipcalc() {
+    IFS=. read -r i1 i2 i3 i4 <<< "$1"
+    IFS=. read -r m1 m2 m3 m4 <<< "$2"
+    echo "$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
+}
+
+# Demande à l'utilisateur s'il veut un scan automatique ou manuel
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo " 🔍 Scan du réseau "
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "1️⃣  Scan automatique (détection de l'IP et du masque)"
+echo "2️⃣  Scan manuel (saisie de l'IP et du masque)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+read -p "➡️  Choisissez une option (1 ou 2) : " choice
+
+# Scan automatique
+if [ "$choice" == "1" ]; then
+    echo "🛠️  Détection automatique du réseau..."
+    
+    # Récupérer l'interface principale
+    interface=$(route get default 2>/dev/null | grep 'interface:' | awk '{print $2}')
+    if [ -z "$interface" ]; then
+        echo "❌ Impossible de détecter l'interface réseau."
+        exit 1
+    fi
+
+    # Récupérer l'adresse IP de l'interface
+    input_ip=$(ipconfig getifaddr "$interface" 2>/dev/null)
+    if [ -z "$input_ip" ]; then
+        echo "❌ Impossible de détecter l'adresse IP."
+        exit 1
+    fi
+
+    # Récupérer le masque de sous-réseau
+    input_mask=$(ifconfig "$interface" | grep -w "netmask" | awk '{print $4}')
+    if [ -z "$input_mask" ]; then
+        echo "❌ Impossible de détecter le masque de sous-réseau."
+        exit 1
+    fi
+
+    # Convertir le masque hexadécimal en format standard
+    input_mask=$(printf "%d.%d.%d.%d\n" \
+        $(( (0x${input_mask:2:2}) )) \
+        $(( (0x${input_mask:4:2}) )) \
+        $(( (0x${input_mask:6:2}) )) \
+        $(( (0x${input_mask:8:2}) )))
+
+# Scan manuel
+elif [ "$choice" == "2" ]; then
+    echo "📝 Mode manuel sélectionné."
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "📌 Exemple :"
+    echo "  - IP de base : 192.168.42.0"
+    echo "  - Masque : 255.255.255.0"
+    echo "  - Autre exemple : 169.254.136.208 255.255.0.0"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    read -p "➡️  Entrez l'IP de base : " input_ip
+    read -p "➡️  Entrez le masque de sous-réseau : " input_mask
+else
+    echo "❌ Option invalide. Veuillez relancer le script."
+    exit 1
+fi
+
+# Vérifie que les entrées sont valides (IPV4 et masque corrects)
+if [[ ! "$input_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "❌ Format IP invalide. Exemple : 192.168.1.0"
+    exit 1
+fi
+if [[ ! "$input_mask" =~ ^(255\.(255|254|252|248|240|224|192|128|0)\.0\.0|255\.255\.(255|254|252|248|240|224|192|128|0)\.0|255\.255\.255\.(255|254|252|248|240|224|192|128|0))$ ]]; then
+    echo "❌ Format de masque invalide. Exemple : 255.255.255.0"
+    exit 1
+fi
+
+# Convertir le masque en préfixe (ex: 255.255.255.0 → /24)
+prefix=$(mask_to_prefix "$input_mask")
+
+# Calcul de l'adresse réseau
+network_ip=$(ipcalc "$input_ip" "$input_mask")
+
+# Détermine la plage d'adresses
+IFS=. read -r n1 n2 n3 n4 <<< "$network_ip"
+IFS=. read -r m1 m2 m3 m4 <<< "$input_mask"
+host_min=$(( (256 + n4 + 1) % 256 ))  # Première IP utilisable
+host_max=$(( (n4 | (255 - m4)) - 1 )) # Dernière IP utilisable
+
+echo -e "${BLUE}📡 Scan en cours sur $network_ip/$prefix...${NC}"
+for i in $(seq "$host_min" "$host_max"); do
+    ip="$n1.$n2.$n3.$i"
+    if ping -c 1 -t 1 "$ip" &>/dev/null; then
+        echo -e "${GREEN}✅ Répond : $ip${NC}"
+    fi &
+done
+
+wait
+echo -e "${GREEN}✅ Scan terminé.${NC}"

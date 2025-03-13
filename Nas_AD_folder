@@ -1,0 +1,460 @@
+#!/bin/bash
+
+# Couleurs pour l'affichage
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Fonction pour afficher l'ASCII art
+show_ascii_art() {
+    printf "%b███████╗ ██████╗ ██╗     ██████╗ ███████╗██████╗ ███████╗%b\n" "$BLUE" "$NC"
+    printf "%b██╔════╝██╔═══██╗██║     ██╔══██╗██╔════╝██╔══██╗██╔════╝%b\n" "$BLUE" "$NC"
+    printf "%b█████╗  ██║   ██║██║     ██║  ██║█████╗  ██████╔╝███████╗%b\n" "$BLUE" "$NC"
+    printf "%b██╔══╝  ██║   ██║██║     ██║  ██║██╔══╝  ██╔══██╗╚════██║%b\n" "$BLUE" "$NC"
+    printf "%b██║     ╚██████╔╝███████╗██████╔╝███████╗██║  ██║███████║%b\n" "$BLUE" "$NC"
+    printf "%b╚═╝      ╚═════╝ ╚══════╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚══════╝%b\n" "$BLUE" "$NC"
+    printf "%b ┌─┐┌─┐┌─┐┌┬┐┬┌─┐┌┐┌   ┬ ┬┌┬┐┬┬  ┬┌─┐┌─┐┌┬┐┌─┐┬ ┬┬─┐┌─┐%b\n" "$CYAN" "$NC"
+    printf "%b │ ┬├┤ └─┐ │ ││ ││││   │ │ │ ││  │└─┐├─┤ │ ├┤ │ │├┬┘└─┐%b\n" "$CYAN" "$NC"
+    printf "%b └─┘└─┘└─┘ ┴ ┴└─┘┘└┘   └─┘ ┴ ┴┴─┘┴└─┘┴ ┴ ┴ └─┘└─┘┴└─└─┘%b\n" "$CYAN" "$NC"
+    printf "%b=======================================================================%b\n" "$PURPLE" "$NC"
+    printf "%b           Gestion des dossiers utilisateurs Active Directory         %b\n" "$GREEN" "$NC"
+    printf "%b                            par DeusH4ss                              %b\n" "$BLUE" "$NC"
+    printf "%b=======================================================================%b\n" "$PURPLE" "$NC"
+}
+
+# Afficher l'ASCII art au début
+show_ascii_art
+
+# Script de gestion des dossiers utilisateurs AD
+# Usage: ./manage_user_folders.sh [--no-prompt] [--no-archive] [--force-admin=user1,user2,...] [--reinit] [--recron]
+
+# Configuration
+DATASET_PATH="/mnt/Backup/Users"       # Chemin du dataset
+ARCHIVE_PATH="/mnt/Backup/Archives"    # Chemin des archives
+LOG_FILE="/var/log/user_folder_management.log"
+AD_GROUP_USERS="Utilisateurs du domaine"  # Nom du groupe des utilisateurs AD
+AD_GROUP_ADMINS="Admins du domaine"      # Nom du groupe des administrateurs AD
+AD_DOMAIN="monsociete.local"          # Domaine AD pour les ACLs NFSv4
+CRON_FILE="/etc/cron.d/manage_user_folders"  # Fichier cron
+SCRIPT_PATH=$(readlink -f "$0")        # Chemin absolu de ce script
+NO_PROMPT=false                        # Mode interactif par défaut
+NO_ARCHIVE=false                       # Archivage par défaut
+FORCE_ADMINS=""                        # Liste forcée d'administrateurs
+REINIT=false                           # Demander la réinitialisation
+RECRON=false                           # Demander la configuration cron
+BSD_ACLS=false                         # Mode ACL BSD (pour FreeNAS/TrueNAS)
+
+# Fonction de journalisation
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+}
+
+# Traitement des arguments
+for arg in "$@"; do
+    case $arg in
+        --no-prompt)
+            NO_PROMPT=true
+            ;;
+        --no-archive)
+            NO_ARCHIVE=true
+            ;;
+        --force-admin=*)
+            FORCE_ADMINS="${arg#*=}"
+            ;;
+        --reinit)
+            REINIT=true
+            # Supprimer directement le fichier .initialized pour forcer la question
+            if [ -f "$DATASET_PATH/.initialized" ]; then
+                rm -f "$DATASET_PATH/.initialized"
+                log "INFO" "Fichier .initialized supprimé pour forcer la réinitialisation"
+            fi
+            ;;
+        --recron)
+            RECRON=true
+            # Supprimer directement le fichier cron pour forcer la question
+            if [ -f "$CRON_FILE" ]; then
+                rm -f "$CRON_FILE"
+                log "INFO" "Fichier cron supprimé pour forcer la reconfiguration"
+            fi
+            ;;
+        --help)
+            echo "Usage: $0 [options]"
+            echo "Options:"
+            echo "  --no-prompt          : Exécution sans demande de confirmation"
+            echo "  --no-archive         : Supprime les dossiers des utilisateurs supprimés sans archivage"
+            echo "  --force-admin=LISTE  : Force certains utilisateurs à être considérés comme administrateurs"
+            echo "  --reinit             : Force la question de réinitialisation des dossiers"
+            echo "  --recron             : Force la question de configuration cron"
+            echo "  --help               : Affiche cette aide"
+            exit 0
+            ;;
+    esac
+done
+
+# Vérification des dossiers nécessaires
+if [[ ! -d "$DATASET_PATH" ]]; then
+    log "ERREUR" "Le répertoire $DATASET_PATH n'existe pas. Création..."
+    mkdir -p "$DATASET_PATH" || { log "ERREUR" "Impossible de créer $DATASET_PATH. Arrêt."; exit 1; }
+fi
+
+if [[ ! -d "$ARCHIVE_PATH" && "$NO_ARCHIVE" == "false" ]]; then
+    log "INFO" "Le répertoire d'archives $ARCHIVE_PATH n'existe pas. Création..."
+    mkdir -p "$ARCHIVE_PATH" || { log "ERREUR" "Impossible de créer $ARCHIVE_PATH. Arrêt."; exit 1; }
+fi
+
+# Configurer le dossier parent pour permettre l'accès à tous les membres AD
+log "INFO" "Configuration des permissions du dossier parent $DATASET_PATH"
+# Permissions 711 : le propriétaire a tous les droits, le groupe et les autres 
+# ont seulement le droit d'exécution (permet de traverser mais pas de lister)
+chmod 711 "$DATASET_PATH"
+
+# Utiliser wheel ou root comme groupe selon le système
+chown root:wheel "$DATASET_PATH" 2>/dev/null || chown root:root "$DATASET_PATH" 2>/dev/null || true
+
+# Vérifier si `wbinfo` est installé
+if ! command -v wbinfo &> /dev/null; then
+    log "ERREUR" "wbinfo n'est pas installé. Assurez-vous que l'AD est bien intégré."
+    exit 1
+fi
+
+# Vérifier si les ACLs sont supportées
+USE_ACLS=true
+NFSv4_ACLS=false
+
+# Vérifier d'abord les commandes pour NFSv4 ACLs
+if command -v nfs4_setfacl &> /dev/null && command -v nfs4_getfacl &> /dev/null; then
+    log "INFO" "Commandes NFSv4 ACL détectées, utilisation du mode NFSv4 ACLs."
+    NFSv4_ACLS=true
+elif ! command -v setfacl &> /dev/null; then
+    log "AVERTISSEMENT" "Ni setfacl ni nfs4_setfacl ne sont installés. Mode sans ACLs activé."
+    USE_ACLS=false
+fi
+
+# Tester si le système de fichiers supporte les ACLs
+if [ "$USE_ACLS" = true ]; then
+    mkdir -p "$DATASET_PATH" 2>/dev/null
+    TEST_FILE="$DATASET_PATH/.acltest"
+    touch "$TEST_FILE" &>/dev/null
+    
+    if [ "$NFSv4_ACLS" = true ]; then
+        # Test avec les commandes NFSv4
+        if ! nfs4_setfacl -a A::OWNER@:rwatTnNcCoy "$TEST_FILE" &>/dev/null; then
+            log "AVERTISSEMENT" "Le système de fichiers ne supporte pas les ACLs NFSv4. Mode sans ACLs activé."
+            USE_ACLS=false
+            NFSv4_ACLS=false
+        else
+            # Vérification supplémentaire des ACLs NFSv4
+            ACL_CHECK=$(nfs4_getfacl "$TEST_FILE" 2>/dev/null | grep -c "A::OWNER@:rwatTnNcCoy")
+            if [ "$ACL_CHECK" -eq 0 ]; then
+                log "AVERTISSEMENT" "Les ACLs NFSv4 semblent non fonctionnelles. Mode sans ACLs activé."
+                USE_ACLS=false
+                NFSv4_ACLS=false
+            else
+                log "INFO" "Support ACL NFSv4 confirmé et fonctionnel."
+            fi
+        fi
+    else
+        # Test avec les commandes POSIX standard
+        if ! setfacl -m u:root:rw "$TEST_FILE" &>/dev/null; then
+            log "AVERTISSEMENT" "Le système de fichiers ne supporte pas les ACLs POSIX. Mode sans ACLs activé."
+            USE_ACLS=false
+        else
+            # Vérification supplémentaire des ACLs POSIX
+            ACL_CHECK=$(getfacl -p "$TEST_FILE" 2>/dev/null | grep -c "user:root:rw-")
+            if [ "$ACL_CHECK" -eq 0 ]; then
+                log "AVERTISSEMENT" "Les ACLs POSIX semblent non fonctionnelles. Mode sans ACLs activé."
+                USE_ACLS=false
+            else
+                log "INFO" "Support ACL POSIX confirmé et fonctionnel."
+            fi
+        fi
+    fi
+    rm -f "$TEST_FILE"
+fi
+
+# Détection des ACLs sur les systèmes BSD (comme FreeNAS/TrueNAS)
+if [ "$USE_ACLS" = false ]; then
+    # Vérifier si des ACLs sont quand même présentes (symbole +)
+    if ls -ld "$DATASET_PATH" 2>/dev/null | grep -q '+'; then
+        log "INFO" "ACLs détectées sur le système malgré l'échec des tests standards"
+        # Tester si le système utilise une variante BSD d'ACLs
+        if command -v getfacl &> /dev/null && getfacl "$DATASET_PATH" &>/dev/null; then
+            log "INFO" "Mode ACL BSD détecté, utilisation activée"
+            USE_ACLS=true
+            BSD_ACLS=true
+        fi
+    fi
+fi
+
+log "INFO" "Mode ACLs: $([ "$USE_ACLS" = true ] && echo "Activé" || echo "Désactivé")"
+if [ "$USE_ACLS" = true ]; then
+    if [ "$NFSv4_ACLS" = true ]; then
+        log "INFO" "Type d'ACLs: NFSv4"
+    elif [ "$BSD_ACLS" = true ]; then
+        log "INFO" "Type d'ACLs: BSD"
+    else
+        log "INFO" "Type d'ACLs: POSIX"
+    fi
+fi
+
+# Récupérer le GID des groupes AD
+GID_USERS=$(wbinfo --group-info "$AD_GROUP_USERS" 2>/dev/null | cut -d: -f3)
+GID_ADMINS=$(wbinfo --group-info "$AD_GROUP_ADMINS" 2>/dev/null | cut -d: -f3)
+
+if [[ -z "$GID_USERS" || -z "$GID_ADMINS" ]]; then
+    log "ERREUR" "Impossible de récupérer les GID des groupes AD."
+    exit 1
+fi
+
+log "INFO" "GID récupérés :"
+log "INFO" " - $AD_GROUP_USERS : $GID_USERS"
+log "INFO" " - $AD_GROUP_ADMINS : $GID_ADMINS"
+
+# Récupérer tous les utilisateurs AD
+AD_USERS=$(wbinfo -u)
+if [[ -z "$AD_USERS" ]]; then
+    log "ERREUR" "Aucun utilisateur AD récupéré. Vérifiez la connexion à l'AD."
+    exit 1
+fi
+
+# Compter le nombre d'utilisateurs
+USER_COUNT=$(echo "$AD_USERS" | wc -w)
+log "INFO" "$USER_COUNT utilisateurs AD trouvés."
+
+# Afficher la liste complète des utilisateurs
+echo -e "${BLUE}=== Liste des utilisateurs AD ===${NC}" | tee -a "$LOG_FILE"
+echo "$AD_USERS" | tr ' ' '\n' | sort | tee -a "$LOG_FILE"
+echo -e "${BLUE}=======================================${NC}" | tee -a "$LOG_FILE"
+
+# Créer des tableaux pour stocker les administrateurs
+declare -a ADMIN_USERS=()
+
+# Définir les administrateurs connus
+log "INFO" "Définition des administrateurs connus"
+if [[ -n "$FORCE_ADMINS" ]]; then
+    log "INFO" "Utilisation de la liste d'administrateurs forcée: $FORCE_ADMINS"
+    IFS=',' read -ra ADMIN_USERS <<< "$FORCE_ADMINS"
+else
+    # Liste des administrateurs connus
+    ADMIN_USERS=("administrateur" "gbeteta" "phassler")
+    log "INFO" "Utilisation des administrateurs connus: ${ADMIN_USERS[*]}"
+fi
+
+# Afficher les utilisateurs administrateurs
+echo -e "${BLUE}=== Administrateurs identifiés ===${NC}" | tee -a "$LOG_FILE"
+if [ ${#ADMIN_USERS[@]} -eq 0 ]; then
+    echo "Aucun administrateur trouvé." | tee -a "$LOG_FILE"
+else
+    for ADMIN in "${ADMIN_USERS[@]}"; do
+        echo "$ADMIN" | tee -a "$LOG_FILE"
+    done
+fi
+echo -e "${BLUE}=======================================${NC}" | tee -a "$LOG_FILE"
+
+# Demander si c'est la première utilisation
+if [[ ! -f "$DATASET_PATH/.initialized" && "$NO_PROMPT" == "false" ]]; then
+    log "AVERTISSEMENT" "Première utilisation détectée ou réinitialisation forcée !"
+    read -p "Voulez-vous supprimer tous les dossiers et réinitialiser les permissions ? (O/N) : " RESET
+    if [[ "$RESET" =~ ^[Oo]$ ]]; then
+        log "ATTENTION" "Suppression de tous les dossiers et réinitialisation..."
+        rm -rf "$DATASET_PATH"/*
+        log "INFO" "Tous les dossiers ont été supprimés."
+    fi
+    touch "$DATASET_PATH/.initialized"
+fi
+
+# Étape 1 : Création / Mise à jour des dossiers
+log "INFO" "Création/Mise à jour des dossiers utilisateurs..."
+
+# Sauvegarde de l'IFS original et configuration pour gérer les espaces dans les noms
+OLDIFS="$IFS"
+IFS=$'\n'
+for USER in $(echo "$AD_USERS" | tr ' ' '\n'); do
+    # Ignorer les lignes vides
+    [[ -z "$USER" ]] && continue
+    
+    USER_DIR="$DATASET_PATH/$USER"
+    if [[ ! -d "$USER_DIR" ]]; then
+        log "INFO" "Création du dossier : $USER_DIR"
+        mkdir -p "$USER_DIR"
+    fi
+    
+    # Vérifier si l'utilisateur est un administrateur
+    IS_ADMIN=false
+    for ADMIN in "${ADMIN_USERS[@]}"; do
+        if [[ "$USER" == "$ADMIN" ]]; then
+            IS_ADMIN=true
+            break
+        fi
+    done
+    
+    # Appliquer les permissions
+    log "DEBUG" "Application des permissions pour $USER_DIR"
+    chown "$USER:$GID_USERS" "$USER_DIR" 2>/dev/null
+    if [[ $? -ne 0 ]]; then
+        log "AVERTISSEMENT" "Impossible de changer le propriétaire pour $USER_DIR"
+    fi
+    
+    if [ "$USE_ACLS" = true ]; then
+        # Mode ACL
+        if [ "$NFSv4_ACLS" = true ]; then
+            # Mode NFSv4 ACL
+            
+            # Réinitialiser les ACLs existantes
+            # Remplacer par des ACLs de base (propriétaire uniquement)
+            nfs4_setfacl -R -s A::OWNER@:rwatTnNcCoy "$USER_DIR" 2>/dev/null
+            
+            # Donner accès au propriétaire spécifique
+            nfs4_setfacl -a A::${USER}@${AD_DOMAIN}:rwatTnNcCoy "$USER_DIR" 2>/dev/null
+            
+            # Donner accès au groupe des administrateurs
+            nfs4_setfacl -a A::${AD_GROUP_ADMINS}@${AD_DOMAIN}:rwatTnNcCoy "$USER_DIR" 2>/dev/null
+            
+            if [[ $? -ne 0 ]]; then
+                log "AVERTISSEMENT" "Échec d'application des ACLs NFSv4 pour $USER_DIR"
+            fi
+        elif [ "$BSD_ACLS" = true ]; then
+            # Mode BSD ACL (FreeNAS/TrueNAS)
+            # D'abord supprimer toutes les ACLs existantes si possible
+            if command -v setfacl &> /dev/null; then
+                setfacl -b "$USER_DIR" 2>/dev/null
+            fi
+            
+            # CORRECTION: Pour tous les utilisateurs, affecter le groupe des admins
+            # et donner des permissions de lecture/exécution au groupe
+            chgrp "$GID_ADMINS" "$USER_DIR" 2>/dev/null
+            chmod 750 "$USER_DIR"  # rwxr-x--- : propriétaire + groupe admin (lecture/exécution)
+            
+            log "DEBUG" "Permissions BSD appliquées pour $USER_DIR: groupe=$AD_GROUP_ADMINS, mode=750"
+        else
+            # Mode POSIX ACL standard
+            
+            # Supprimer toutes les ACLs existantes d'abord
+            setfacl -b "$USER_DIR" 2>/dev/null
+            
+            # Appliquer les ACLs pour les admins (pour qu'ils puissent accéder à tous les dossiers)
+            setfacl -m "g:$GID_ADMINS:rwx" "$USER_DIR" 2>/dev/null
+            if [[ $? -ne 0 ]]; then
+                log "AVERTISSEMENT" "Échec d'application des ACLs POSIX pour $USER_DIR"
+            fi
+        fi
+    else
+        # Mode sans ACL: permissions Unix standard
+        # CORRECTION: Pour tous les utilisateurs (admin ou non), affecter le groupe 
+        # des admins et donner des permissions de lecture/exécution au groupe
+        chgrp "$GID_ADMINS" "$USER_DIR" 2>/dev/null
+        chmod 750 "$USER_DIR"  # rwxr-x--- : propriétaire + groupe admin (lecture/exécution)
+        
+        if [ "$IS_ADMIN" = true ]; then
+            log "DEBUG" "Dossier admin $USER_DIR configuré pour accès par les autres admins"
+        else
+            log "DEBUG" "Dossier utilisateur $USER_DIR configuré pour accès par les admins"
+        fi
+    fi
+    
+    log "INFO" "Dossier mis à jour pour $USER"
+done
+IFS="$OLDIFS"  # Restaurer l'IFS
+
+# Étape 2 : Suppression ou archivage des anciens dossiers
+log "INFO" "Recherche des dossiers orphelins..."
+
+# Créer un fichier temporaire pour la liste des utilisateurs AD
+TEMP_USERS_FILE=$(mktemp)
+echo "$AD_USERS" | tr ' ' '\n' > "$TEMP_USERS_FILE"
+
+for DIR in "$DATASET_PATH"/*; do
+    # Ignorer les fichiers non-dossiers et les fichiers cachés
+    [[ ! -d "$DIR" || $(basename "$DIR") == .* ]] && continue
+    
+    DIR_NAME=$(basename "$DIR")
+    if ! grep -qFx "$DIR_NAME" "$TEMP_USERS_FILE"; then
+        log "AVERTISSEMENT" "L'utilisateur $DIR_NAME n'existe plus dans l'AD."
+        
+        # Archiver ou supprimer selon la configuration
+        if [[ "$NO_ARCHIVE" == "false" ]]; then
+            ARCHIVE_DIR="$ARCHIVE_PATH/$DIR_NAME-$(date '+%Y%m%d')"
+            log "INFO" "Archivage du dossier vers $ARCHIVE_DIR"
+            mv "$DIR" "$ARCHIVE_DIR" || log "ERREUR" "Échec de l'archivage de $DIR"
+        else
+            log "INFO" "Suppression du dossier $DIR"
+            rm -rf "$DIR" || log "ERREUR" "Échec de la suppression de $DIR"
+        fi
+    fi
+done
+
+# Nettoyer le fichier temporaire
+rm -f "$TEMP_USERS_FILE"
+
+# Vérification finale des permissions
+log "INFO" "Vérification finale des permissions:"
+
+# Permissions du dossier parent
+log "INFO" "Permissions du dossier parent:"
+ls -ld "$DATASET_PATH" | tee -a "$LOG_FILE"
+
+# Échantillon de vérification de quelques dossiers
+log "INFO" "Échantillon de permissions de dossiers utilisateurs:"
+find "$DATASET_PATH" -maxdepth 1 -type d -name "[a-zA-Z]*" -exec ls -ld {} \; | head -5 | tee -a "$LOG_FILE"
+
+# Si on utilise les ACLs, montrer un exemple selon le type
+if [ "$USE_ACLS" = true ]; then
+    log "INFO" "Exemple d'ACLs appliquées:"
+    if [ "$NFSv4_ACLS" = true ]; then
+        # Utiliser nfs4_getfacl pour les ACLs NFSv4
+        find "$DATASET_PATH" -maxdepth 1 -type d -name "[a-zA-Z]*" -exec nfs4_getfacl {} \; | head -15 | tee -a "$LOG_FILE"
+    elif [ "$BSD_ACLS" = true ]; then
+        # Utiliser getfacl pour les ACLs BSD
+        find "$DATASET_PATH" -maxdepth 1 -type d -name "[a-zA-Z]*" -exec getfacl {} \; | head -15 | tee -a "$LOG_FILE"
+    else
+        # Utiliser getfacl pour les ACLs POSIX standard
+        find "$DATASET_PATH" -maxdepth 1 -type d -name "[a-zA-Z]*" -exec getfacl -p {} \; | head -15 | tee -a "$LOG_FILE"
+    fi
+fi
+
+# Rapport simplifié pour éviter les erreurs
+log "INFO" "Génération du rapport détaillé des utilisateurs et permissions..."
+echo -e "${BLUE}====== RAPPORT DÉTAILLÉ DES UTILISATEURS ET PERMISSIONS ======${NC}" | tee -a "$LOG_FILE"
+echo "" | tee -a "$LOG_FILE"
+
+# Liste des dossiers utilisateurs avec leurs permissions
+echo "Permissions des dossiers utilisateurs:" | tee -a "$LOG_FILE"
+ls -la "$DATASET_PATH" | grep -v "^total" | tee -a "$LOG_FILE"
+echo "" | tee -a "$LOG_FILE"
+
+# Liste des administrateurs
+echo "Administrateurs identifiés:" | tee -a "$LOG_FILE"
+for ADMIN in "${ADMIN_USERS[@]}"; do
+    echo "- $ADMIN" | tee -a "$LOG_FILE"
+done
+echo "" | tee -a "$LOG_FILE"
+
+echo -e "${BLUE}====== FIN DU RAPPORT ======${NC}" | tee -a "$LOG_FILE"
+echo "" | tee -a "$LOG_FILE"
+
+log "INFO" "Script terminé ! Gestion des dossiers finalisée."
+
+# Demander si on ajoute une tâche cron
+if [[ ! -f "$CRON_FILE" && "$NO_PROMPT" == "false" ]]; then
+    log "INFO" "Configuration du cron"
+    read -p "Voulez-vous automatiser ce script avec cron ? (O/N) : " ADD_CRON
+    if [[ "$ADD_CRON" =~ ^[Oo]$ ]]; then
+        echo "0 2 * * * root $SCRIPT_PATH --no-prompt > $LOG_FILE 2>&1" > "$CRON_FILE"
+        chmod 644 "$CRON_FILE"
+        log "INFO" "Tâche cron ajoutée ! Le script s'exécutera tous les jours à 2h du matin."
+    else
+        log "INFO" "Aucune tâche cron ajoutée."
+    fi
+else
+    log "INFO" "Une tâche cron est déjà en place ou mode sans prompt activé."
+fi
+
+exit 0

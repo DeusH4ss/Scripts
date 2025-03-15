@@ -49,6 +49,36 @@ ipcalc() {
     echo "$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
 }
 
+# Fonction pour résoudre les noms d'hôtes
+resolve_hostname() {
+    local ip=$1
+    local hostname=""
+    
+    # Utiliser nslookup pour trouver le nom d'hôte, en filtrant les réponses d'erreur
+    hostname=$(nslookup "$ip" 2>/dev/null | grep -i "name =" | awk '{print $4}' | sed 's/\.$//')
+    
+    # Si nslookup ne retourne pas de résultat valide ou retourne une erreur
+    if [[ -z "$hostname" || "$hostname" == *"NXDOMAIN"* ]]; then
+        # Essayer avec la commande host si disponible
+        if command -v host >/dev/null 2>&1; then
+            hostname=$(host "$ip" 2>/dev/null | grep -v "not found" | grep "domain name" | awk '{print $5}' | sed 's/\.$//')
+        fi
+        
+        # Essayer avec la commande dig si disponible
+        if [[ -z "$hostname" ]] && command -v dig >/dev/null 2>&1; then
+            hostname=$(dig +short -x "$ip" 2>/dev/null)
+            hostname=${hostname%.}  # Retirer le point final s'il existe
+        fi
+    fi
+    
+    # Si un nom d'hôte valide est trouvé, le retourner, sinon retourner "Non résolu"
+    if [[ -n "$hostname" && "$hostname" != *"NXDOMAIN"* && "$hostname" != *"not found"* ]]; then
+        echo "$hostname"
+    else
+        echo "Non résolu"
+    fi
+}
+
 # Demande à l'utilisateur s'il veut un scan automatique ou manuel
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " 🔍 Scan du réseau "
@@ -99,23 +129,169 @@ elif [ "$choice" == "2" ]; then
     echo "  - Masque : 255.255.255.0"
     echo "  - Autre exemple : 169.254.136.208 255.255.0.0"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-    read -p "➡️  Entrez l'IP de base : " input_ip
-    read -p "➡️  Entrez le masque de sous-réseau : " input_mask
+    
+    # Détecter l'interface principale pour les valeurs par défaut
+    default_interface=$(route get default 2>/dev/null | grep 'interface:' | awk '{print $2}')
+    default_ip=""
+    default_mask=""
+    
+    # Si une interface est détectée, essayer d'obtenir l'IP et le masque
+    if [ -n "$default_interface" ]; then
+        default_ip=$(ipconfig getifaddr "$default_interface" 2>/dev/null)
+        
+        # Obtenir le masque et le convertir au format standard
+        temp_mask=$(ifconfig "$default_interface" 2>/dev/null | grep -w "netmask" | awk '{print $4}')
+        if [[ "$temp_mask" == 0x* ]]; then
+            default_mask=$(printf "%d.%d.%d.%d\n" \
+                $(( (0x${temp_mask:2:2}) )) \
+                $(( (0x${temp_mask:4:2}) )) \
+                $(( (0x${temp_mask:6:2}) )) \
+                $(( (0x${temp_mask:8:2}) )))
+        fi
+        
+        # Calculer l'adresse réseau pour la valeur par défaut
+        if [ -n "$default_ip" ] && [ -n "$default_mask" ]; then
+            # Extraire les octets
+            IFS=. read -r i1 i2 i3 i4 <<< "$default_ip"
+            IFS=. read -r m1 m2 m3 m4 <<< "$default_mask"
+            # Calculer l'adresse réseau
+            default_ip="$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).0"
+        else
+            # Valeurs par défaut si la détection échoue
+            default_ip="192.168.1.0"
+            default_mask="255.255.255.0"
+        fi
+    else
+        # Valeurs par défaut si aucune interface n'est détectée
+        default_ip="192.168.1.0"
+        default_mask="255.255.255.0"
+    fi
+    
+    # Demander l'adresse IP avec valeur par défaut
+    read -p "➡️  Entrez l'IP de base [$default_ip] : " input_ip
+    input_ip=${input_ip:-$default_ip}  # Utiliser la valeur par défaut si vide
+    
+    # Demander le masque avec valeur par défaut
+    read -p "➡️  Entrez le masque de sous-réseau [$default_mask] : " input_mask
+    input_mask=${input_mask:-$default_mask}  # Utiliser la valeur par défaut si vide
 else
-    echo "❌ Option invalide. Veuillez relancer le script."
-    exit 1
+    # Boucle jusqu'à ce que l'utilisateur entre une option valide
+    while [[ "$choice" != "1" && "$choice" != "2" ]]; do
+        echo -e "${RED}❌ Option invalide. Veuillez choisir 1 ou 2.${NC}"
+        read -p "➡️  Choisissez une option (1 ou 2) : " choice
+    done
+    
+    # Retour au début du script pour traiter l'option valide
+    if [ "$choice" == "1" ]; then
+        echo "🛠️  Détection automatique du réseau..."
+        # Récupérer l'interface principale
+        interface=$(route get default 2>/dev/null | grep 'interface:' | awk '{print $2}')
+        if [ -z "$interface" ]; then
+            echo "❌ Impossible de détecter l'interface réseau."
+            exit 1
+        fi
+
+        # Récupérer l'adresse IP de l'interface
+        input_ip=$(ipconfig getifaddr "$interface" 2>/dev/null)
+        if [ -z "$input_ip" ]; then
+            echo "❌ Impossible de détecter l'adresse IP."
+            exit 1
+        fi
+
+        # Récupérer le masque de sous-réseau
+        input_mask=$(ifconfig "$interface" | grep -w "netmask" | awk '{print $4}')
+        if [ -z "$input_mask" ]; then
+            echo "❌ Impossible de détecter le masque de sous-réseau."
+            exit 1
+        fi
+
+        # Convertir le masque hexadécimal en format standard
+        input_mask=$(printf "%d.%d.%d.%d\n" \
+            $(( (0x${input_mask:2:2}) )) \
+            $(( (0x${input_mask:4:2}) )) \
+            $(( (0x${input_mask:6:2}) )) \
+            $(( (0x${input_mask:8:2}) )))
+    elif [ "$choice" == "2" ]; then
+        echo "📝 Mode manuel sélectionné."
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📌 Exemple :"
+        echo "  - IP de base : 192.168.42.0"
+        echo "  - Masque : 255.255.255.0"
+        echo "  - Autre exemple : 169.254.136.208 255.255.0.0"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        # Détecter l'interface principale pour les valeurs par défaut
+        default_interface=$(route get default 2>/dev/null | grep 'interface:' | awk '{print $2}')
+        default_ip=""
+        default_mask=""
+        
+        # Si une interface est détectée, essayer d'obtenir l'IP et le masque
+        if [ -n "$default_interface" ]; then
+            default_ip=$(ipconfig getifaddr "$default_interface" 2>/dev/null)
+            
+            # Obtenir le masque et le convertir au format standard
+            temp_mask=$(ifconfig "$default_interface" 2>/dev/null | grep -w "netmask" | awk '{print $4}')
+            if [[ "$temp_mask" == 0x* ]]; then
+                default_mask=$(printf "%d.%d.%d.%d\n" \
+                    $(( (0x${temp_mask:2:2}) )) \
+                    $(( (0x${temp_mask:4:2}) )) \
+                    $(( (0x${temp_mask:6:2}) )) \
+                    $(( (0x${temp_mask:8:2}) )))
+            fi
+            
+            # Calculer l'adresse réseau pour la valeur par défaut
+            if [ -n "$default_ip" ] && [ -n "$default_mask" ]; then
+                # Extraire les octets
+                IFS=. read -r i1 i2 i3 i4 <<< "$default_ip"
+                IFS=. read -r m1 m2 m3 m4 <<< "$default_mask"
+                # Calculer l'adresse réseau
+                default_ip="$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).0"
+            else
+                # Valeurs par défaut si la détection échoue
+                default_ip="192.168.1.0"
+                default_mask="255.255.255.0"
+            fi
+        else
+            # Valeurs par défaut si aucune interface n'est détectée
+            default_ip="192.168.1.0"
+            default_mask="255.255.255.0"
+        fi
+        
+        # Demander l'adresse IP avec valeur par défaut
+        read -p "➡️  Entrez l'IP de base [$default_ip] : " input_ip
+        input_ip=${input_ip:-$default_ip}  # Utiliser la valeur par défaut si vide
+        
+        # Demander le masque avec valeur par défaut
+        read -p "➡️  Entrez le masque de sous-réseau [$default_mask] : " input_mask
+        input_mask=${input_mask:-$default_mask}  # Utiliser la valeur par défaut si vide
+    fi
 fi
 
 # Vérifie que les entrées sont valides (IPV4 et masque corrects)
-if [[ ! "$input_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "❌ Format IP invalide. Exemple : 192.168.1.0"
-    exit 1
-fi
-if [[ ! "$input_mask" =~ ^(255\.(255|254|252|248|240|224|192|128|0)\.0\.0|255\.255\.(255|254|252|248|240|224|192|128|0)\.0|255\.255\.255\.(255|254|252|248|240|224|192|128|0))$ ]]; then
-    echo "❌ Format de masque invalide. Exemple : 255.255.255.0"
-    exit 1
-fi
+ip_valid=false
+mask_valid=false
+
+while [ "$ip_valid" = false ] || [ "$mask_valid" = false ]; do
+    # Vérification de l'IP
+    if [ "$ip_valid" = false ]; then
+        if [[ "$input_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            ip_valid=true
+        else
+            echo -e "${RED}❌ Format IP invalide. Exemple : 192.168.1.0${NC}"
+            read -p "➡️  Veuillez entrer à nouveau l'IP de base : " input_ip
+        fi
+    fi
+    
+    # Vérification du masque
+    if [ "$mask_valid" = false ]; then
+        if [[ "$input_mask" =~ ^(255\.(255|254|252|248|240|224|192|128|0)\.0\.0|255\.255\.(255|254|252|248|240|224|192|128|0)\.0|255\.255\.255\.(255|254|252|248|240|224|192|128|0))$ ]]; then
+            mask_valid=true
+        else
+            echo -e "${RED}❌ Format de masque invalide. Exemple : 255.255.255.0${NC}"
+            read -p "➡️  Veuillez entrer à nouveau le masque de sous-réseau : " input_mask
+        fi
+    fi
+done
 
 # Convertir le masque en préfixe (ex: 255.255.255.0 → /24)
 prefix=$(mask_to_prefix "$input_mask")
@@ -129,13 +305,74 @@ IFS=. read -r m1 m2 m3 m4 <<< "$input_mask"
 host_min=$(( (256 + n4 + 1) % 256 ))  # Première IP utilisable
 host_max=$(( (n4 | (255 - m4)) - 1 )) # Dernière IP utilisable
 
+# Option pour afficher les noms d'hôtes
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🔍 Options de scan"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "1️⃣  Scan rapide (ping uniquement)"
+echo "2️⃣  Scan détaillé (ping + résolution de noms)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+read -p "➡️  Choisissez une option (1 ou 2) : " scan_option
+
+# En-tête résultats
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${BLUE}📡 Scan en cours sur $network_ip/$prefix...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Créer un fichier temporaire pour stocker les résultats
+temp_file=$(mktemp)
+
+# Scan du réseau
 for i in $(seq "$host_min" "$host_max"); do
     ip="$n1.$n2.$n3.$i"
-    if ping -c 1 -t 1 "$ip" &>/dev/null; then
-        echo -e "${GREEN}✅ Répond : $ip${NC}"
-    fi &
+    {
+        if ping -c 1 -t 1 "$ip" &>/dev/null; then
+            if [ "$scan_option" == "2" ]; then
+                hostname=$(resolve_hostname "$ip")
+                echo "$ip $hostname" >> "$temp_file"
+            else
+                echo "$ip" >> "$temp_file"
+            fi
+        fi
+    } &
+    
+    # Limiter le nombre de processus en parallèle
+    if [[ $(jobs -r | wc -l) -ge 20 ]]; then
+        wait # Attendre que tous les jobs se terminent
+    fi
 done
 
 wait
+
+# Afficher les résultats triés
+if [ "$scan_option" == "2" ]; then
+    echo -e "${YELLOW}Adresse IP        Nom d'hôte${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    sort -V "$temp_file" | while read -r line; do
+        ip=$(echo "$line" | awk '{print $1}')
+        hostname=$(echo "$line" | cut -d ' ' -f 2-)
+        
+        # Vérifier si l'hostname contient "NXDOMAIN" ou autres erreurs
+        if [[ "$hostname" == *"NXDOMAIN"* || "$hostname" == *"not found"* ]]; then
+            hostname="Non résolu"
+        fi
+        
+        if [ "$hostname" != "Non résolu" ]; then
+            echo -e "${GREEN}✅ $ip\t${CYAN}$hostname${NC}"
+        else
+            echo -e "${GREEN}✅ $ip\t${YELLOW}$hostname${NC}"
+        fi
+    done
+else
+    echo -e "${YELLOW}Adresses IP actives${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    sort -V "$temp_file" | while read -r ip; do
+        echo -e "${GREEN}✅ $ip${NC}"
+    done
+fi
+
+# Supprimer le fichier temporaire
+rm -f "$temp_file"
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${GREEN}✅ Scan terminé.${NC}"

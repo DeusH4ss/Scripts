@@ -1,0 +1,108 @@
+#!/bin/bash
+# Script d'installation et de configuration de Rsyslog pour l'envoi de logs vers Graylog
+# Ce script automatise les étapes d'installation et de configuration décrites dans la procédure
+
+# Définition des couleurs
+BLUE="\e[1;34m"
+GREEN="\e[1;32m"
+PURPLE="\e[1;35m"
+CYAN="\e[1;36m"
+RESET="\e[0m"
+
+# Fonction pour afficher l'ASCII art
+show_ascii_art() {
+    printf "%b██████╗  ███████╗██╗   ██╗███████╗██╗      ██████╗  ██████╗ %b\n" "$BLUE" "$RESET"
+    printf "%b██╔══██╗ ██╔════╝╚██╗ ██╔╝██╔════╝██║     ██╔═══██╗██╔════╝ %b\n" "$BLUE" "$RESET"
+    printf "%b██████╔╝ ███████╗ ╚████╔╝ ███████╗██║     ██║   ██║██║  ███╗%b\n" "$BLUE" "$RESET"
+    printf "%b██╔══██╗ ╚════██║  ╚██╔╝  ╚════██║██║     ██║   ██║██║   ██║%b\n" "$BLUE" "$RESET"
+    printf "%b██║  ██║ ███████║   ██║   ███████║███████╗╚██████╔╝╚██████╔╝%b\n" "$BLUE" "$RESET"
+    printf "%b╚═╝  ╚═╝ ╚══════╝   ╚═╝   ╚══════╝╚══════╝ ╚═════╝  ╚═════╝ %b\n" "$BLUE" "$RESET"
+    printf "%b ┌─┐┬─┐┌─┐┬ ┬┬  ┌─┐┌─┐   ┌─┐┌─┐┌┐┌┌─┐┬┌─┐┬ ┬┬─┐┌─┐┌┬┐┬┌─┐┌┐┌%b\n" "$GREEN" "$RESET"
+    printf "%b │ ┬├┬┘├─┤└┬┘│  │ ││ ┬   │  │ ││││├┤ ││ ┬│ │├┬┘├─┤ │ ││ ││││%b\n" "$GREEN" "$RESET"
+    printf "%b └─┘┴└─┴ ┴ ┴ ┴─┘└─┘└─┘   └─┘└─┘┘└┘└  ┴└─┘└─┘┴└─┴ ┴ ┴ ┴└─┘┘└┘%b\n" "$GREEN" "$RESET"
+    printf "%b=======================================================================%b\n" "$PURPLE" "$RESET"
+    printf "%b           Installation et Configuration de Rsyslog pour Graylog        %b\n" "$CYAN" "$RESET"
+    printf "%b                            par DeusH4ss                             %b\n" "$BLUE" "$RESET"
+    printf "%b=======================================================================%b\n" "$PURPLE" "$RESET"
+}
+
+# Fonction pour afficher les messages
+print_message() {
+    echo -e "\n\e[1;34m=== $1 ===\e[0m\n"
+}
+
+# Vérification des privilèges d'exécution
+if [[ $EUID -ne 0 ]]; then
+    echo "Ce script doit être exécuté en tant que root ou avec sudo"
+    exit 1
+fi
+
+# Affichage de l'ASCII art
+show_ascii_art
+
+# Demande des informations de configuration
+print_message "Configuration du serveur Graylog"
+
+# Valeurs par défaut
+DEFAULT_GRAYLOG_SERVER="192.168.42.248"
+DEFAULT_GRAYLOG_PORT="5140"
+DEFAULT_PROTOCOL="UDP"
+
+# Demande de l'adresse IP du serveur Graylog
+read -p "Adresse IP du serveur Graylog [$DEFAULT_GRAYLOG_SERVER]: " GRAYLOG_SERVER
+GRAYLOG_SERVER=${GRAYLOG_SERVER:-$DEFAULT_GRAYLOG_SERVER}
+
+# Demande du port du serveur Graylog
+read -p "Port du serveur Graylog [$DEFAULT_GRAYLOG_PORT]: " GRAYLOG_PORT
+GRAYLOG_PORT=${GRAYLOG_PORT:-$DEFAULT_GRAYLOG_PORT}
+
+# Demande du protocole à utiliser
+read -p "Protocole à utiliser (UDP/TCP) [$DEFAULT_PROTOCOL]: " PROTOCOL_INPUT
+PROTOCOL_INPUT=${PROTOCOL_INPUT:-$DEFAULT_PROTOCOL}
+
+# Conversion du protocole en format pour rsyslog
+if [[ "${PROTOCOL_INPUT,,}" == "tcp" ]]; then
+    PROTOCOL="@@"
+else
+    PROTOCOL="@"
+fi
+
+# A. Installation de Rsyslog
+print_message "A. Installation du paquet Rsyslog"
+apt-get update
+apt-get install -y rsyslog
+
+# Vérification du statut de Rsyslog
+print_message "Vérification du statut de Rsyslog"
+systemctl status rsyslog --no-pager
+
+# B. Configuration de Rsyslog
+print_message "B. Configuration de Rsyslog"
+
+# Création du fichier de configuration pour Graylog
+CONFIG_FILE="/etc/rsyslog.d/10-graylog.conf"
+print_message "Création du fichier de configuration: $CONFIG_FILE"
+
+# Création du contenu du fichier de configuration
+cat > $CONFIG_FILE << EOF
+*.* ${PROTOCOL}${GRAYLOG_SERVER}:${GRAYLOG_PORT};RSYSLOG_SyslogProtocol23Format
+EOF
+
+echo "Contenu du fichier $CONFIG_FILE:"
+cat $CONFIG_FILE
+
+# Redémarrage du service Rsyslog
+print_message "Redémarrage du service Rsyslog"
+systemctl restart rsyslog.service
+
+# Vérification finale
+print_message "Configuration terminée"
+echo "Le service Rsyslog est configuré pour envoyer les logs à ${GRAYLOG_SERVER}:${GRAYLOG_PORT} via $(if [[ $PROTOCOL == "@" ]]; then echo "UDP"; else echo "TCP"; fi)"
+systemctl is-active --quiet rsyslog && echo "Le service Rsyslog est actif" || echo "ERREUR: Le service Rsyslog n'est pas actif"
+
+# Envoi d'un message test
+print_message "Envoi d'un message test"
+logger "Test de configuration Rsyslog vers Graylog effectué depuis $(hostname)"
+echo "Un message de test a été envoyé à Graylog. Vérifiez dans l'interface de Graylog si le message est bien reçu."
+
+exit 0

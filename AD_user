@@ -1,0 +1,449 @@
+# ============================================================================
+# Script PowerShell COMPLET - Iron4Software Mail Infrastructure
+# ============================================================================
+# 
+# Ce script fait TOUT :
+# 1. Crée les 26 utilisateurs dans Active Directory
+# 2. Crée les 5 groupes de sécurité (Direction, Secrétariat, etc.)
+# 3. Ajoute les utilisateurs aux groupes
+# 4. Crée une GPO pour déployer et configurer Thunderbird automatiquement
+#
+# À exécuter sur le contrôleur de domaine Windows (WS-g4.ironsoft.local)
+# Exécuter en tant qu'Administrateur
+# ============================================================================
+
+# Import des modules nécessaires
+Import-Module ActiveDirectory
+Import-Module GroupPolicy
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+$Domain = "ironsoft.local"
+$OU = "OU=Users,DC=ironsoft,DC=local"
+$MailServer = "mail.ironsoft.local"
+$MailDomain = "iron4software.local"
+
+Write-Host ""
+Write-Host "============================================================================" -ForegroundColor Cyan
+Write-Host "  Iron4Software - Infrastructure Mail Complète" -ForegroundColor Cyan
+Write-Host "  Création : Users + Groupes + GPO Thunderbird" -ForegroundColor Cyan
+Write-Host "============================================================================" -ForegroundColor Cyan
+Write-Host ""
+
+# ============================================================================
+# PARTIE 1 : CRÉATION DES UTILISATEURS
+# ============================================================================
+
+Write-Host "[1/4] Création des utilisateurs Active Directory..." -ForegroundColor Yellow
+Write-Host ""
+
+# Liste des 26 utilisateurs Iron4Software
+$Users = @(
+    # Direction (3)
+    @{Username="emoreau"; Nom="Moreau"; Prenom="Elise"; Password="password123"; Departement="Direction"},
+    @{Username="troussel"; Nom="Roussel"; Prenom="Thomas"; Password="password123"; Departement="Direction"},
+    @{Username="mchevreau"; Nom="Chevreau"; Prenom="Marion"; Password="password123"; Departement="Direction"},
+    
+    # Secrétariat (2)
+    @{Username="sberanger"; Nom="Beranger"; Prenom="Sophie"; Password="Sosol982"; Departement="Secretariat"},
+    @{Username="bcolin"; Nom="Colin"; Prenom="Benjamin"; Password="password123"; Departement="Secretariat"},
+    
+    # Comptabilité (3)
+    @{Username="nlefevre"; Nom="Lefèvre"; Prenom="Nina"; Password="password123"; Departement="Comptabilite"},
+    @{Username="jmorel"; Nom="Morel"; Prenom="Julien"; Password="password123"; Departement="Comptabilite"},
+    @{Username="croche"; Nom="Roche"; Prenom="Camille"; Password="password123"; Departement="Comptabilite"},
+    
+    # Vente (3)
+    @{Username="ylanglois"; Nom="Langlois"; Prenom="Yanis"; Password="password123"; Departement="Vente"},
+    @{Username="svilledieu"; Nom="Villedieu"; Prenom="Sarah"; Password="password123"; Departement="Vente"},
+    @{Username="lbernard"; Nom="Bernard"; Prenom="Loic"; Password="password123"; Departement="Vente"},
+    
+    # IT (15)
+    @{Username="kdelaunay"; Nom="Delaunay"; Prenom="Karim"; Password="password123"; Departement="IT"},
+    @{Username="jcaron"; Nom="Caron"; Prenom="Jules"; Password="password123"; Departement="IT"},
+    @{Username="gporte"; Nom="Porte"; Prenom="Guillaume"; Password="guillaume123"; Departement="IT"},
+    @{Username="aduval"; Nom="Duval"; Prenom="Anais"; Password="password123"; Departement="IT"},
+    @{Username="lbenelli"; Nom="Benelli"; Prenom="Lucas"; Password="password123"; Departement="IT"},
+    @{Username="bhernandez"; Nom="Hernandez"; Prenom="Bruno"; Password="21031988"; Departement="IT"},
+    @{Username="plejuste"; Nom="Lejuste"; Prenom="Pierre"; Password="password123"; Departement="IT"},
+    @{Username="ncharlier"; Nom="Charlier"; Prenom="Noé"; Password="password123"; Departement="IT"},
+    @{Username="igauthier"; Nom="Gauthier"; Prenom="Inès"; Password="password123"; Departement="IT"},
+    @{Username="vrenard"; Nom="Renard"; Prenom="Victor"; Password="password123"; Departement="IT"},
+    @{Username="alemoine"; Nom="Lemoine"; Prenom="Adrien"; Password="password123"; Departement="IT"},
+    @{Username="rlefort"; Nom="Lefort"; Prenom="Rayan"; Password="password123"; Departement="IT"},
+    @{Username="ebaron"; Nom="Baron"; Prenom="Emile"; Password="password123"; Departement="IT"},
+    @{Username="mbourdon"; Nom="Bourdon"; Prenom="Maya"; Password="password123"; Departement="IT"}
+)
+
+$UserSuccessCount = 0
+$UserFailCount = 0
+
+foreach ($User in $Users) {
+    $Username = $User.Username
+    $Nom = $User.Nom
+    $Prenom = $User.Prenom
+    $Password = $User.Password
+    $Departement = $User.Departement
+    
+    Write-Host "  Création de $Username ($Prenom $Nom)..." -NoNewline
+    
+    try {
+        # Vérifier si l'utilisateur existe déjà
+        $ExistingUser = Get-ADUser -Filter "SamAccountName -eq '$Username'" -ErrorAction SilentlyContinue
+        
+        if ($ExistingUser) {
+            Write-Host " [EXISTE]" -ForegroundColor Yellow
+            
+            # Mettre à jour le mot de passe
+            $SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
+            Set-ADAccountPassword -Identity $Username -NewPassword $SecurePassword -Reset
+            Enable-ADAccount -Identity $Username
+            
+            $UserSuccessCount++
+        }
+        else {
+            # Créer l'utilisateur
+            $SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
+            
+            # Générer l'email avec le format prenom.nom
+            $PrenomClean = $Prenom.ToLower() -replace 'é','e' -replace 'è','e' -replace 'ê','e' -replace 'à','a' -replace 'ô','o' -replace 'î','i'
+            $NomClean = $Nom.ToLower() -replace 'é','e' -replace 'è','e' -replace 'ê','e' -replace 'à','a' -replace 'ô','o' -replace 'î','i'
+            $EmailAlias = "$PrenomClean.$NomClean@$MailDomain"
+            
+            $UserParams = @{
+                Name = "$Prenom $Nom"
+                GivenName = $Prenom
+                Surname = $Nom
+                SamAccountName = $Username
+                UserPrincipalName = "$Username@$Domain"
+                EmailAddress = $EmailAlias
+                DisplayName = "$Prenom $Nom"
+                Department = $Departement
+                Description = "Iron4Software - $Departement"
+                AccountPassword = $SecurePassword
+                Enabled = $true
+                Path = $OU
+                ChangePasswordAtLogon = $false
+                PasswordNeverExpires = $true
+            }
+            
+            New-ADUser @UserParams
+            
+            Write-Host " [OK]" -ForegroundColor Green
+            $UserSuccessCount++
+        }
+    }
+    catch {
+        Write-Host " [ERREUR]" -ForegroundColor Red
+        Write-Host "    → $_" -ForegroundColor Red
+        $UserFailCount++
+    }
+}
+
+Write-Host ""
+Write-Host "  Résumé utilisateurs : " -NoNewline
+Write-Host "Succès=$UserSuccessCount " -ForegroundColor Green -NoNewline
+Write-Host "Échecs=$UserFailCount" -ForegroundColor $(if ($UserFailCount -gt 0) { "Red" } else { "Green" })
+Write-Host ""
+
+# ============================================================================
+# PARTIE 2 : CRÉATION DES GROUPES DE SÉCURITÉ
+# ============================================================================
+
+Write-Host "[2/4] Création des groupes de sécurité..." -ForegroundColor Yellow
+Write-Host ""
+
+$Groupes = @(
+    @{Nom="Direction"; Description="Groupe Direction - Iron4Software"},
+    @{Nom="Secretariat"; Description="Groupe Secrétariat - Iron4Software"},
+    @{Nom="Comptabilite"; Description="Groupe Comptabilité - Iron4Software"},
+    @{Nom="Vente"; Description="Groupe Vente - Iron4Software"},
+    @{Nom="IT"; Description="Groupe IT - Iron4Software"}
+)
+
+$GroupSuccessCount = 0
+
+foreach ($Groupe in $Groupes) {
+    $NomGroupe = $Groupe.Nom
+    $Description = $Groupe.Description
+    
+    Write-Host "  Création du groupe $NomGroupe..." -NoNewline
+    
+    try {
+        $ExistingGroup = Get-ADGroup -Filter "Name -eq '$NomGroupe'" -ErrorAction SilentlyContinue
+        
+        if (-not $ExistingGroup) {
+            New-ADGroup -Name $NomGroupe -GroupScope Global -GroupCategory Security -Path $OU -Description $Description
+            Write-Host " [OK]" -ForegroundColor Green
+            $GroupSuccessCount++
+        }
+        else {
+            Write-Host " [EXISTE]" -ForegroundColor Yellow
+            $GroupSuccessCount++
+        }
+    }
+    catch {
+        Write-Host " [ERREUR]" -ForegroundColor Red
+    }
+}
+
+Write-Host ""
+Write-Host "  Groupes créés : $GroupSuccessCount/5" -ForegroundColor Green
+Write-Host ""
+
+# ============================================================================
+# PARTIE 3 : AJOUT DES UTILISATEURS AUX GROUPES
+# ============================================================================
+
+Write-Host "[3/4] Ajout des utilisateurs aux groupes..." -ForegroundColor Yellow
+Write-Host ""
+
+$MembershipCount = 0
+
+foreach ($User in $Users) {
+    $Username = $User.Username
+    $Departement = $User.Departement
+    
+    try {
+        # Vérifier si l'utilisateur existe
+        $ADUser = Get-ADUser -Filter "SamAccountName -eq '$Username'" -ErrorAction SilentlyContinue
+        
+        if ($ADUser) {
+            # Vérifier si déjà membre
+            $IsMember = Get-ADGroupMember -Identity $Departement -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $Username }
+            
+            if (-not $IsMember) {
+                Add-ADGroupMember -Identity $Departement -Members $Username
+                Write-Host "  ✓ $Username → $Departement" -ForegroundColor Green
+                $MembershipCount++
+            }
+        }
+    }
+    catch {
+        # Ignorer les erreurs (déjà membre, etc.)
+    }
+}
+
+Write-Host ""
+Write-Host "  Membres ajoutés aux groupes : $MembershipCount" -ForegroundColor Green
+Write-Host ""
+
+# ============================================================================
+# PARTIE 4 : CRÉATION DE LA GPO THUNDERBIRD
+# ============================================================================
+
+Write-Host "[4/4] Création de la GPO pour déployer Thunderbird..." -ForegroundColor Yellow
+Write-Host ""
+
+$GPOName = "Iron4Software - Deploy Thunderbird"
+$ThunderbirdInstallerURL = "https://download.mozilla.org/?product=thunderbird-latest&os=win64&lang=fr"
+$ThunderbirdInstallerPath = "\\$env:COMPUTERNAME\SYSVOL\$Domain\scripts\Thunderbird-Setup.exe"
+
+try {
+    # Vérifier si la GPO existe déjà
+    $ExistingGPO = Get-GPO -Name $GPOName -ErrorAction SilentlyContinue
+    
+    if ($ExistingGPO) {
+        Write-Host "  GPO '$GPOName' existe déjà" -ForegroundColor Yellow
+        Write-Host "  → Suppression et recréation..." -ForegroundColor Yellow
+        Remove-GPO -Name $GPOName -Confirm:$false
+    }
+    
+    # Créer la nouvelle GPO
+    Write-Host "  Création de la GPO '$GPOName'..." -NoNewline
+    $GPO = New-GPO -Name $GPOName -Comment "Déploiement automatique de Thunderbird avec configuration mail"
+    Write-Host " [OK]" -ForegroundColor Green
+    
+    # Lier la GPO au domaine
+    Write-Host "  Liaison de la GPO au domaine..." -NoNewline
+    New-GPLink -Name $GPOName -Target "DC=$($Domain.Replace('.', ',DC='))" -LinkEnabled Yes | Out-Null
+    Write-Host " [OK]" -ForegroundColor Green
+    
+    # Créer le dossier de scripts si nécessaire
+    $ScriptPath = "\\$env:COMPUTERNAME\SYSVOL\$Domain\scripts"
+    if (-not (Test-Path $ScriptPath)) {
+        New-Item -Path $ScriptPath -ItemType Directory -Force | Out-Null
+    }
+    
+    # Créer le script de déploiement Thunderbird
+    $DeployScriptPath = Join-Path $ScriptPath "Deploy-Thunderbird.ps1"
+    
+    Write-Host "  Création du script de déploiement..." -NoNewline
+    
+    $DeployScript = @"
+# Script de déploiement Thunderbird - Iron4Software
+# Exécuté automatiquement via GPO au démarrage de l'ordinateur
+
+`$LogFile = "C:\Windows\Temp\Thunderbird-Deploy.log"
+`$ThunderbirdExe = "C:\Program Files\Mozilla Thunderbird\thunderbird.exe"
+
+# Fonction de log
+function Write-Log {
+    param([string]`$Message)
+    `$Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "`$Timestamp - `$Message" | Out-File -FilePath `$LogFile -Append
+}
+
+Write-Log "=== Début du déploiement Thunderbird ==="
+
+# Vérifier si Thunderbird est déjà installé
+if (Test-Path `$ThunderbirdExe) {
+    Write-Log "Thunderbird déjà installé"
+}
+else {
+    Write-Log "Installation de Thunderbird..."
+    
+    # Télécharger Thunderbird
+    `$InstallerPath = "`$env:TEMP\Thunderbird-Setup.exe"
+    `$DownloadURL = "https://download.mozilla.org/?product=thunderbird-latest&os=win64&lang=fr"
+    
+    try {
+        # Télécharger
+        Write-Log "Téléchargement depuis `$DownloadURL"
+        Invoke-WebRequest -Uri `$DownloadURL -OutFile `$InstallerPath -UseBasicParsing
+        
+        # Installer en mode silencieux
+        Write-Log "Installation en cours..."
+        Start-Process -FilePath `$InstallerPath -ArgumentList "/S" -Wait
+        
+        Write-Log "Installation terminée"
+        
+        # Nettoyer
+        Remove-Item -Path `$InstallerPath -Force
+    }
+    catch {
+        Write-Log "ERREUR : `$_"
+    }
+}
+
+# Configurer Thunderbird pour tous les utilisateurs
+`$ThunderbirdConfigPath = "C:\Program Files\Mozilla Thunderbird\defaults\pref"
+
+if (Test-Path `$ThunderbirdConfigPath) {
+    Write-Log "Configuration de Thunderbird..."
+    
+    `$ConfigFile = Join-Path `$ThunderbirdConfigPath "iron4software-autoconfig.js"
+    
+    `$ConfigContent = @"
+// Configuration automatique Iron4Software
+// Ce fichier configure Thunderbird automatiquement pour tous les utilisateurs
+
+// Configuration du serveur mail
+pref("mail.identity.default.useremail", "");
+pref("mail.identity.default.fullName", "");
+
+// Serveur IMAP
+pref("mail.server.default.type", "imap");
+pref("mail.server.default.hostname", "$MailServer");
+pref("mail.server.default.port", 143);
+pref("mail.server.default.socketType", 2); // STARTTLS
+pref("mail.server.default.authMethod", 3); // Mot de passe normal
+
+// Serveur SMTP
+pref("mail.smtpserver.default.hostname", "$MailServer");
+pref("mail.smtpserver.default.port", 25);
+pref("mail.smtpserver.default.authMethod", 0); // Pas d'authentification
+
+// Paramètres généraux
+pref("mailnews.start_page.enabled", false);
+pref("mail.rights.version", 1);
+pref("mail.shell.checkDefaultClient", false);
+
+// Désactiver les mises à jour automatiques (géré par GPO)
+pref("app.update.enabled", false);
+pref("app.update.auto", false);
+"@
+    
+    `$ConfigContent | Out-File -FilePath `$ConfigFile -Encoding ASCII -Force
+    Write-Log "Configuration créée : `$ConfigFile"
+}
+
+Write-Log "=== Fin du déploiement Thunderbird ==="
+"@
+    
+    $DeployScript | Out-File -FilePath $DeployScriptPath -Encoding UTF8 -Force
+    Write-Host " [OK]" -ForegroundColor Green
+    
+    # Configurer la GPO pour exécuter le script au démarrage
+    Write-Host "  Configuration de la GPO..." -NoNewline
+    
+    # Importer le module pour gérer les scripts de démarrage
+    $GPOPath = "\\$Domain\SYSVOL\$Domain\Policies\{$($GPO.Id)}\Machine\Scripts"
+    
+    if (-not (Test-Path $GPOPath)) {
+        New-Item -Path $GPOPath -ItemType Directory -Force | Out-Null
+    }
+    
+    if (-not (Test-Path "$GPOPath\Startup")) {
+        New-Item -Path "$GPOPath\Startup" -ItemType Directory -Force | Out-Null
+    }
+    
+    # Copier le script dans le dossier de la GPO
+    Copy-Item -Path $DeployScriptPath -Destination "$GPOPath\Startup\Deploy-Thunderbird.ps1" -Force
+    
+    # Créer le fichier scripts.ini pour la GPO
+    $ScriptsIni = @"
+[Startup]
+0CmdLine=PowerShell.exe -ExecutionPolicy Bypass -File Deploy-Thunderbird.ps1
+0Parameters=
+"@
+    
+    $ScriptsIni | Out-File -FilePath "$GPOPath\scripts.ini" -Encoding ASCII -Force
+    
+    Write-Host " [OK]" -ForegroundColor Green
+    
+    Write-Host ""
+    Write-Host "  ✓ GPO '$GPOName' créée avec succès !" -ForegroundColor Green
+    Write-Host "  ✓ Thunderbird sera installé automatiquement sur tous les postes" -ForegroundColor Green
+    Write-Host "  ✓ Configuration mail automatique : $MailServer" -ForegroundColor Green
+    Write-Host ""
+}
+catch {
+    Write-Host " [ERREUR]" -ForegroundColor Red
+    Write-Host "  → $_" -ForegroundColor Red
+}
+
+# ============================================================================
+# RÉSUMÉ FINAL
+# ============================================================================
+
+Write-Host ""
+Write-Host "============================================================================" -ForegroundColor Cyan
+Write-Host "  DÉPLOIEMENT TERMINÉ !" -ForegroundColor Cyan
+Write-Host "============================================================================" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "✓ Utilisateurs créés : $UserSuccessCount/26" -ForegroundColor Green
+Write-Host "✓ Groupes créés : $GroupSuccessCount/5" -ForegroundColor Green
+Write-Host "✓ Membres ajoutés aux groupes : $MembershipCount" -ForegroundColor Green
+Write-Host "✓ GPO Thunderbird créée et liée" -ForegroundColor Green
+Write-Host ""
+
+Write-Host "PROCHAINES ÉTAPES :" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "1. Sur le serveur mail Linux, exécuter :" -ForegroundColor White
+Write-Host "   sudo ./create_mailboxes_for_ad_users.sh" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "2. Attendre 15-90 minutes pour la réplication GPO" -ForegroundColor White
+Write-Host "   (ou forcer : gpupdate /force sur les postes clients)" -ForegroundColor Gray
+Write-Host ""
+Write-Host "3. Au prochain démarrage des postes :" -ForegroundColor White
+Write-Host "   - Thunderbird sera installé automatiquement" -ForegroundColor Cyan
+Write-Host "   - Configuration mail sera appliquée" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "4. Les utilisateurs devront juste :" -ForegroundColor White
+Write-Host "   - Ouvrir Thunderbird" -ForegroundColor Cyan
+Write-Host "   - Entrer leur username AD (ex: emoreau)" -ForegroundColor Cyan
+Write-Host "   - Entrer leur mot de passe AD" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "VÉRIFICATIONS :" -ForegroundColor Yellow
+Write-Host "  Get-ADUser -Filter * | Select Name" -ForegroundColor Gray
+Write-Host "  Get-ADGroup -Filter * | Select Name" -ForegroundColor Gray
+Write-Host "  Get-GPO -Name '$GPOName'" -ForegroundColor Gray
+Write-Host ""
+
+Write-Host "============================================================================" -ForegroundColor Cyan
+Write-Host ""

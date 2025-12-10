@@ -1,327 +1,1209 @@
 #!/bin/bash
-# Iron4Software Mail Manager - Version minimale corrigée
 
-echo "=== Iron4Software Mail Manager Minimal ==="
+#############################################
+# Script de gestion du serveur mail
+# Iron4Software Lab - Cybersecurity Training
+#############################################
 
-while true; do
-  clear
-  echo ""
-  echo "╔════════════════════════════════════╗"
-  echo "║  Iron4Software Mail Manager       ║"
-  echo "╚════════════════════════════════════╝"
-  echo ""
-  echo "1) Créer un utilisateur"
-  echo "2) Lister les utilisateurs"  
-  echo "3) Créer les 26 utilisateurs Iron4Software"
-  echo "4) Réparer les permissions"
-  echo "5) Quitter"
-  echo ""
-  read -p "Choix: " c
-  
-  case $c in
-    1) 
-      echo ""
-      read -p "Username: " u
-      read -sp "Password: " p
-      echo ""
-      read -p "Nom: " nom
-      read -p "Prénom: " prenom
-      
-      useradd -m -c "$prenom $nom" "$u"
-      echo "$u:$p" | chpasswd
-      usermod -aG mail "$u"
-      touch "/var/mail/$u"
-      chown "$u:mail" "/var/mail/$u"
-      chmod 660 "/var/mail/$u"
-      
-      echo ""
-      echo "✓ Utilisateur $u créé avec boîte mail"
-      echo ""
-      read -p "Appuyer sur Entrée pour continuer..."
-      ;;
-      
-    2)
-      echo ""
-      echo "═══ Utilisateurs avec boîte mail ═══"
-      echo ""
-      for mailfile in /var/mail/*; do
+# Couleurs pour l'affichage
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+DOMAIN="iron4software.local"
+MAIL_SERVER="mail.iron4software.local"
+
+# Configuration Active Directory
+AD_ENABLED=false
+AD_SERVER="ws-g4.ironsoft.local"
+AD_DOMAIN="ironsoft.local"
+AD_ADMIN="administrateur"
+AD_BASE_OU="OU=Users,DC=ironsoft,DC=local"
+AD_DEFAULT_PASSWORD_POLICY=true
+
+# Banner
+echo -e "${BLUE}"
+echo "================================================"
+echo "   Iron4Software - Mail Server Manager"
+echo "================================================"
+echo -e "${NC}"
+
+#############################################
+# Fonction : Vérifier si root
+#############################################
+check_root() {
+    if [ "$EUID" -ne 0 ]; then 
+        echo -e "${RED}[✗] Ce script doit être exécuté en tant que root${NC}"
+        echo "Utilise: sudo $0"
+        exit 1
+    fi
+}
+
+#############################################
+# Fonction : Vérifier les services
+#############################################
+check_services() {
+    echo -e "\n${BLUE}[INFO] Vérification des services...${NC}"
+    
+    services=("postfix" "dovecot" "apache2")
+    all_ok=true
+    
+    for service in "${services[@]}"; do
+        if systemctl is-active --quiet "$service"; then
+            echo -e "${GREEN}[✓] $service : actif${NC}"
+        else
+            echo -e "${RED}[✗] $service : inactif${NC}"
+            all_ok=false
+        fi
+    done
+    
+    if [ "$all_ok" = false ]; then
+        echo -e "${YELLOW}[!] Certains services ne sont pas actifs${NC}"
+        read -p "Démarrer les services manquants ? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            for service in "${services[@]}"; do
+                if ! systemctl is-active --quiet "$service"; then
+                    systemctl start "$service"
+                    echo -e "${GREEN}[✓] $service démarré${NC}"
+                fi
+            done
+        fi
+    fi
+}
+
+#############################################
+# Fonction : Vérifier la configuration
+#############################################
+check_config() {
+    echo -e "\n${BLUE}[INFO] Vérification de la configuration...${NC}"
+    
+    # Vérifier Postfix
+    echo -e "\n${YELLOW}=== Postfix Configuration ===${NC}"
+    postconf -n | grep -E "myhostname|mydomain|mynetworks|inet_interfaces" || echo -e "${RED}[✗] Config Postfix incomplète${NC}"
+    
+    # Vérifier Dovecot
+    echo -e "\n${YELLOW}=== Dovecot Configuration ===${NC}"
+    doveconf mail_location ssl protocols
+    
+    # Vérifier les ports
+    echo -e "\n${YELLOW}=== Ports en écoute ===${NC}"
+    netstat -tlnp | grep -E "(:25|:143|:993|:587|:80)" | grep -E "(postfix|dovecot|apache)" || echo -e "${RED}[✗] Ports mail non configurés${NC}"
+    
+    # Vérifier les certificats SSL
+    echo -e "\n${YELLOW}=== Certificats SSL ===${NC}"
+    if [ -f "/etc/ssl/certs/mail.iron4software.crt" ]; then
+        echo -e "${GREEN}[✓] Certificat trouvé${NC}"
+        openssl x509 -in /etc/ssl/certs/mail.iron4software.crt -noout -subject -dates
+    else
+        echo -e "${RED}[✗] Certificat non trouvé${NC}"
+    fi
+    
+    # Vérifier le groupe mail
+    echo -e "\n${YELLOW}=== Groupe mail ===${NC}"
+    if groups dovecot | grep -q mail; then
+        echo -e "${GREEN}[✓] dovecot est dans le groupe mail${NC}"
+    else
+        echo -e "${RED}[✗] dovecot n'est PAS dans le groupe mail${NC}"
+        read -p "Ajouter dovecot au groupe mail ? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            usermod -aG mail dovecot
+            systemctl restart dovecot
+            echo -e "${GREEN}[✓] dovecot ajouté au groupe mail et service redémarré${NC}"
+        fi
+    fi
+}
+
+#############################################
+# Fonction : Créer un utilisateur
+#############################################
+create_user() {
+    echo -e "\n${BLUE}[INFO] Création d'un nouvel utilisateur mail${NC}"
+    
+    read -p "Nom d'utilisateur : " username
+    
+    # Vérifier si l'utilisateur existe déjà
+    if id "$username" &>/dev/null; then
+        echo -e "${YELLOW}[!] L'utilisateur $username existe déjà${NC}"
+        read -p "Réinitialiser le mot de passe ? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return
+        fi
+    else
+        # Créer l'utilisateur
+        useradd -m -s /bin/bash "$username"
+        echo -e "${GREEN}[✓] Utilisateur $username créé${NC}"
+    fi
+    
+    # Définir le mot de passe
+    echo -e "\n${YELLOW}Options de mot de passe :${NC}"
+    echo "1) Mot de passe simple (password)"
+    echo "2) Mot de passe faible personnalisé (pour bruteforce)"
+    echo "3) Mot de passe fort personnalisé"
+    read -p "Choix (1-3) : " pass_choice
+    
+    case $pass_choice in
+        1)
+            password="password"
+            echo -e "${YELLOW}[!] Mot de passe défini : password${NC}"
+            ;;
+        2)
+            read -p "Mot de passe faible (ex: user123) : " password
+            ;;
+        3)
+            read -sp "Mot de passe fort : " password
+            echo
+            ;;
+        *)
+            password="password"
+            echo -e "${YELLOW}[!] Choix invalide, utilisation de 'password'${NC}"
+            ;;
+    esac
+    
+    # Définir le mot de passe (utiliser printf pour éviter les problèmes d'échappement)
+    printf "%s:%s\n" "$username" "$password" | chpasswd
+    
+    # Créer la boîte mail
+    touch "/var/mail/$username"
+    chown "$username:mail" "/var/mail/$username"
+    chmod 660 "/var/mail/$username"
+    
+    echo -e "${GREEN}[✓] Boîte mail créée pour $username${NC}"
+    echo -e "${GREEN}[✓] Email : $username@$DOMAIN${NC}"
+    echo -e "${GREEN}[✓] Mot de passe : $password${NC}"
+    
+    # Test de connexion
+    echo -e "\n${YELLOW}[TEST] Test de connexion IMAP...${NC}"
+    test_imap_login "$username" "$password"
+}
+
+#############################################
+# Fonction : Lister les utilisateurs mail
+#############################################
+list_users() {
+    echo -e "\n${BLUE}[INFO] Utilisateurs mail configurés :${NC}"
+    echo -e "${YELLOW}----------------------------------------${NC}"
+    
+    for mailfile in /var/mail/*; do
         if [ -f "$mailfile" ]; then
-          username=$(basename "$mailfile")
-          if [ "$username" != "root" ]; then
-            fullname=$(getent passwd "$username" | cut -d: -f5 | cut -d, -f1)
-            if [ -n "$fullname" ]; then
-              echo "✓ $username ($fullname)"
-            else
-              echo "✓ $username"
+            username=$(basename "$mailfile")
+            if [ "$username" != "root" ] && id "$username" &>/dev/null; then
+                size=$(du -h "$mailfile" | cut -f1)
+                perms=$(ls -lh "$mailfile" | awk '{print $1, $3":"$4}')
+                local full_name=$(getent passwd "$username" | cut -d: -f5 | cut -d, -f1)
+                
+                echo -e "${GREEN}$username@$DOMAIN${NC}"
+                if [ -n "$full_name" ]; then
+                    echo "  Nom     : $full_name"
+                    
+                    # Afficher l'alias s'il existe
+                    local prenom=$(echo "$full_name" | cut -d' ' -f1)
+                    local nom=$(echo "$full_name" | cut -d' ' -f2-)
+                    if [ -n "$prenom" ] && [ -n "$nom" ] && [ "$prenom" != "$nom" ]; then
+                        local prenom_clean=$(echo "$prenom" | tr '[:upper:]' '[:lower:]' | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$prenom" | tr '[:upper:]' '[:lower:]')
+                        local nom_clean=$(echo "$nom" | tr '[:upper:]' '[:lower:]' | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$nom" | tr '[:upper:]' '[:lower:]')
+                        echo "  Alias   : ${prenom_clean}.${nom_clean}@$DOMAIN"
+                    fi
+                fi
+                echo "  Fichier : $mailfile"
+                echo "  Taille  : $size"
+                echo "  Perms   : $perms"
+                echo ""
             fi
-          fi
         fi
-      done
-      echo ""
-      read -p "Appuyer sur Entrée pour continuer..."
-      ;;
-      
-    3)
-      echo ""
-      echo "═══ Création des 26 utilisateurs Iron4Software ═══"
-      echo ""
-      
-      # Direction
-      useradd -m -c "Elise Moreau" emoreau 2>/dev/null
-      echo 'emoreau:password123' | chpasswd
-      usermod -aG mail emoreau
-      touch /var/mail/emoreau
-      chown emoreau:mail /var/mail/emoreau
-      chmod 660 /var/mail/emoreau
-      echo "✓ emoreau (Elise Moreau)"
-      
-      useradd -m -c "Thomas Roussel" troussel 2>/dev/null
-      echo 'troussel:password123' | chpasswd
-      usermod -aG mail troussel
-      touch /var/mail/troussel
-      chown troussel:mail /var/mail/troussel
-      chmod 660 /var/mail/troussel
-      echo "✓ troussel (Thomas Roussel)"
-      
-      useradd -m -c "Marion Chevreau" mchevreau 2>/dev/null
-      echo 'mchevreau:password123' | chpasswd
-      usermod -aG mail mchevreau
-      touch /var/mail/mchevreau
-      chown mchevreau:mail /var/mail/mchevreau
-      chmod 660 /var/mail/mchevreau
-      echo "✓ mchevreau (Marion Chevreau)"
-      
-      # Secrétariat
-      useradd -m -c "Sophie Beranger" sberanger 2>/dev/null
-      echo 'sberanger:Sosol982' | chpasswd
-      usermod -aG mail sberanger
-      touch /var/mail/sberanger
-      chown sberanger:mail /var/mail/sberanger
-      chmod 660 /var/mail/sberanger
-      echo "✓ sberanger (Sophie Beranger)"
-      
-      useradd -m -c "Benjamin Colin" bcolin 2>/dev/null
-      echo 'bcolin:password123' | chpasswd
-      usermod -aG mail bcolin
-      touch /var/mail/bcolin
-      chown bcolin:mail /var/mail/bcolin
-      chmod 660 /var/mail/bcolin
-      echo "✓ bcolin (Benjamin Colin)"
-      
-      # Comptabilité
-      useradd -m -c "Nina Lefevre" nlefevre 2>/dev/null
-      echo 'nlefevre:password123' | chpasswd
-      usermod -aG mail nlefevre
-      touch /var/mail/nlefevre
-      chown nlefevre:mail /var/mail/nlefevre
-      chmod 660 /var/mail/nlefevre
-      echo "✓ nlefevre (Nina Lefevre)"
-      
-      useradd -m -c "Julien Morel" jmorel 2>/dev/null
-      echo 'jmorel:password123' | chpasswd
-      usermod -aG mail jmorel
-      touch /var/mail/jmorel
-      chown jmorel:mail /var/mail/jmorel
-      chmod 660 /var/mail/jmorel
-      echo "✓ jmorel (Julien Morel)"
-      
-      useradd -m -c "Camille Roche" croche 2>/dev/null
-      echo 'croche:password123' | chpasswd
-      usermod -aG mail croche
-      touch /var/mail/croche
-      chown croche:mail /var/mail/croche
-      chmod 660 /var/mail/croche
-      echo "✓ croche (Camille Roche)"
-      
-      # Vente
-      useradd -m -c "Yanis Langlois" ylanglois 2>/dev/null
-      echo 'ylanglois:password123' | chpasswd
-      usermod -aG mail ylanglois
-      touch /var/mail/ylanglois
-      chown ylanglois:mail /var/mail/ylanglois
-      chmod 660 /var/mail/ylanglois
-      echo "✓ ylanglois (Yanis Langlois)"
-      
-      useradd -m -c "Sarah Villedieu" svilledieu 2>/dev/null
-      echo 'svilledieu:password123' | chpasswd
-      usermod -aG mail svilledieu
-      touch /var/mail/svilledieu
-      chown svilledieu:mail /var/mail/svilledieu
-      chmod 660 /var/mail/svilledieu
-      echo "✓ svilledieu (Sarah Villedieu)"
-      
-      useradd -m -c "Loic Bernard" lbernard 2>/dev/null
-      echo 'lbernard:password123' | chpasswd
-      usermod -aG mail lbernard
-      touch /var/mail/lbernard
-      chown lbernard:mail /var/mail/lbernard
-      chmod 660 /var/mail/lbernard
-      echo "✓ lbernard (Loic Bernard)"
-      
-      # IT
-      useradd -m -c "Karim Delaunay" kdelaunay 2>/dev/null
-      echo 'kdelaunay:password123' | chpasswd
-      usermod -aG mail kdelaunay
-      touch /var/mail/kdelaunay
-      chown kdelaunay:mail /var/mail/kdelaunay
-      chmod 660 /var/mail/kdelaunay
-      echo "✓ kdelaunay (Karim Delaunay)"
-      
-      useradd -m -c "Jules Caron" jcaron 2>/dev/null
-      echo 'jcaron:password123' | chpasswd
-      usermod -aG mail jcaron
-      touch /var/mail/jcaron
-      chown jcaron:mail /var/mail/jcaron
-      chmod 660 /var/mail/jcaron
-      echo "✓ jcaron (Jules Caron)"
-      
-      useradd -m -c "Guillaume Porte" gporte 2>/dev/null
-      echo 'gporte:guillaume123' | chpasswd
-      usermod -aG mail gporte
-      touch /var/mail/gporte
-      chown gporte:mail /var/mail/gporte
-      chmod 660 /var/mail/gporte
-      echo "✓ gporte (Guillaume Porte)"
-      
-      useradd -m -c "Anais Duval" aduval 2>/dev/null
-      echo 'aduval:password123' | chpasswd
-      usermod -aG mail aduval
-      touch /var/mail/aduval
-      chown aduval:mail /var/mail/aduval
-      chmod 660 /var/mail/aduval
-      echo "✓ aduval (Anais Duval)"
-      
-      useradd -m -c "Lucas Benelli" lbenelli 2>/dev/null
-      echo 'lbenelli:password123' | chpasswd
-      usermod -aG mail lbenelli
-      touch /var/mail/lbenelli
-      chown lbenelli:mail /var/mail/lbenelli
-      chmod 660 /var/mail/lbenelli
-      echo "✓ lbenelli (Lucas Benelli)"
-      
-      useradd -m -c "Bruno Hernandez" bhernandez 2>/dev/null
-      echo 'bhernandez:21031988' | chpasswd
-      usermod -aG mail bhernandez
-      touch /var/mail/bhernandez
-      chown bhernandez:mail /var/mail/bhernandez
-      chmod 660 /var/mail/bhernandez
-      echo "✓ bhernandez (Bruno Hernandez)"
-      
-      useradd -m -c "Pierre Lejuste" plejuste 2>/dev/null
-      echo 'plejuste:password123' | chpasswd
-      usermod -aG mail plejuste
-      touch /var/mail/plejuste
-      chown plejuste:mail /var/mail/plejuste
-      chmod 660 /var/mail/plejuste
-      echo "✓ plejuste (Pierre Lejuste)"
-      
-      useradd -m -c "Noe Charlier" ncharlier 2>/dev/null
-      echo 'ncharlier:password123' | chpasswd
-      usermod -aG mail ncharlier
-      touch /var/mail/ncharlier
-      chown ncharlier:mail /var/mail/ncharlier
-      chmod 660 /var/mail/ncharlier
-      echo "✓ ncharlier (Noe Charlier)"
-      
-      useradd -m -c "Ines Gauthier" igauthier 2>/dev/null
-      echo 'igauthier:password123' | chpasswd
-      usermod -aG mail igauthier
-      touch /var/mail/igauthier
-      chown igauthier:mail /var/mail/igauthier
-      chmod 660 /var/mail/igauthier
-      echo "✓ igauthier (Ines Gauthier)"
-      
-      useradd -m -c "Victor Renard" vrenard 2>/dev/null
-      echo 'vrenard:password123' | chpasswd
-      usermod -aG mail vrenard
-      touch /var/mail/vrenard
-      chown vrenard:mail /var/mail/vrenard
-      chmod 660 /var/mail/vrenard
-      echo "✓ vrenard (Victor Renard)"
-      
-      useradd -m -c "Adrien Lemoine" alemoine 2>/dev/null
-      echo 'alemoine:password123' | chpasswd
-      usermod -aG mail alemoine
-      touch /var/mail/alemoine
-      chown alemoine:mail /var/mail/alemoine
-      chmod 660 /var/mail/alemoine
-      echo "✓ alemoine (Adrien Lemoine)"
-      
-      useradd -m -c "Rayan Lefort" rlefort 2>/dev/null
-      echo 'rlefort:password123' | chpasswd
-      usermod -aG mail rlefort
-      touch /var/mail/rlefort
-      chown rlefort:mail /var/mail/rlefort
-      chmod 660 /var/mail/rlefort
-      echo "✓ rlefort (Rayan Lefort)"
-      
-      useradd -m -c "Emile Baron" ebaron 2>/dev/null
-      echo 'ebaron:password123' | chpasswd
-      usermod -aG mail ebaron
-      touch /var/mail/ebaron
-      chown ebaron:mail /var/mail/ebaron
-      chmod 660 /var/mail/ebaron
-      echo "✓ ebaron (Emile Baron)"
-      
-      useradd -m -c "Maya Bourdon" mbourdon 2>/dev/null
-      echo 'mbourdon:password123' | chpasswd
-      usermod -aG mail mbourdon
-      touch /var/mail/mbourdon
-      chown mbourdon:mail /var/mail/mbourdon
-      chmod 660 /var/mail/mbourdon
-      echo "✓ mbourdon (Maya Bourdon)"
-      
-      echo ""
-      echo "✓ 26 utilisateurs Iron4Software créés !"
-      echo ""
-      read -p "Appuyer sur Entrée pour continuer..."
-      ;;
-      
-    4)
-      echo ""
-      echo "═══ Réparation des permissions ═══"
-      echo ""
-      
-      # Réparer /var/mail
-      chmod 775 /var/mail
-      chown root:mail /var/mail
-      echo "✓ Permissions /var/mail corrigées"
-      
-      # Réparer les boîtes mail individuelles
-      for mailfile in /var/mail/*; do
+    done
+    
+    echo ""
+    echo -e "${BLUE}[INFO] Alias mail configurés :${NC}"
+    echo -e "${YELLOW}----------------------------------------${NC}"
+    
+    if [ -f /etc/postfix/virtual ]; then
+        local alias_count=$(grep -c "@${DOMAIN}" /etc/postfix/virtual 2>/dev/null || echo "0")
+        if [ "$alias_count" -gt 0 ]; then
+            grep "@${DOMAIN}" /etc/postfix/virtual | while IFS= read -r line; do
+                echo "  → $line"
+            done
+        else
+            echo "  (Aucun alias configuré)"
+        fi
+    else
+        echo "  (Fichier virtual non trouvé)"
+    fi
+    
+    echo ""
+}
+
+#############################################
+# Fonction : Tester l'authentification IMAP
+#############################################
+test_imap_login() {
+    local user=$1
+    local pass=$2
+    
+    # Test via telnet avec expect-like behavior
+    result=$(timeout 5 bash -c "
+        exec 3<>/dev/tcp/localhost/143
+        cat <&3 &
+        echo 'a1 LOGIN $user $pass' >&3
+        sleep 1
+        echo 'a2 LOGOUT' >&3
+        sleep 1
+    " 2>&1 | grep -i "OK")
+    
+    if echo "$result" | grep -q "OK"; then
+        echo -e "${GREEN}[✓] Authentification IMAP réussie pour $user${NC}"
+    else
+        echo -e "${RED}[✗] Échec d'authentification IMAP pour $user${NC}"
+        echo "Vérifier les logs : sudo tail /var/log/mail.log"
+    fi
+}
+
+#############################################
+# Fonction : Réparer les permissions
+#############################################
+fix_permissions() {
+    echo -e "\n${BLUE}[INFO] Réparation des permissions...${NC}"
+    
+    # Réparer /var/mail
+    chmod 775 /var/mail
+    chown root:mail /var/mail
+    echo -e "${GREEN}[✓] Permissions /var/mail corrigées${NC}"
+    
+    # Réparer les boîtes mail individuelles
+    for mailfile in /var/mail/*; do
         if [ -f "$mailfile" ]; then
-          username=$(basename "$mailfile")
-          if [ "$username" != "root" ] && id "$username" &>/dev/null; then
-            chown "$username:mail" "$mailfile"
-            chmod 660 "$mailfile"
-            echo "✓ $mailfile"
-          fi
+            username=$(basename "$mailfile")
+            if [ "$username" != "root" ] && id "$username" &>/dev/null; then
+                chown "$username:mail" "$mailfile"
+                chmod 660 "$mailfile"
+                echo -e "${GREEN}[✓] Permissions corrigées : $mailfile${NC}"
+            fi
         fi
-      done
-      
-      # Vérifier dovecot dans groupe mail
-      if ! groups dovecot 2>/dev/null | grep -q mail; then
+    done
+    
+    # Vérifier dovecot dans groupe mail
+    if ! groups dovecot | grep -q mail; then
         usermod -aG mail dovecot
-        echo "✓ dovecot ajouté au groupe mail"
-      fi
-      
-      systemctl restart dovecot 2>/dev/null
-      echo "✓ Dovecot redémarré"
-      
-      echo ""
-      read -p "Appuyer sur Entrée pour continuer..."
-      ;;
-      
-    5) 
-      echo ""
-      echo "Au revoir !"
-      exit 0
-      ;;
-      
-    *)
-      echo ""
-      echo "Choix invalide"
-      sleep 1
-      ;;
-  esac
+        echo -e "${GREEN}[✓] dovecot ajouté au groupe mail${NC}"
+    fi
+    
+    systemctl restart dovecot
+    echo -e "${GREEN}[✓] Dovecot redémarré${NC}"
+}
+
+#############################################
+# Fonction : Régénérer tous les alias mail
+#############################################
+regenerate_all_aliases() {
+    echo -e "\n${BLUE}[INFO] Régénération des alias mail${NC}\n"
+    
+    local alias_file="/etc/postfix/virtual"
+    
+    # Sauvegarder l'ancien fichier
+    if [ -f "$alias_file" ]; then
+        cp "$alias_file" "${alias_file}.backup.$(date +%Y%m%d_%H%M%S)"
+        echo -e "${YELLOW}[!] Sauvegarde créée${NC}"
+    fi
+    
+    # Créer un nouveau fichier vide
+    echo "# Alias virtuels pour Iron4Software" > "$alias_file"
+    echo "# Format: prenom.nom@domain    username" >> "$alias_file"
+    echo "# Généré automatiquement le $(date)" >> "$alias_file"
+    echo "" >> "$alias_file"
+    
+    # Configurer Postfix
+    configure_virtual_aliases
+    
+    local count=0
+    
+    # Parcourir tous les utilisateurs avec boîte mail
+    for username in $(ls /var/mail/ 2>/dev/null | grep -v "^root$"); do
+        if id "$username" &>/dev/null; then
+            # Récupérer le GECOS (nom complet)
+            local full_name=$(getent passwd "$username" | cut -d: -f5 | cut -d, -f1)
+            
+            if [ -n "$full_name" ]; then
+                # Extraire prénom et nom
+                local prenom=$(echo "$full_name" | cut -d' ' -f1)
+                local nom=$(echo "$full_name" | cut -d' ' -f2-)
+                
+                if [ -n "$prenom" ] && [ -n "$nom" ] && [ "$prenom" != "$nom" ]; then
+                    # Normaliser
+                    local prenom_clean=$(echo "$prenom" | tr '[:upper:]' '[:lower:]' | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$prenom" | tr '[:upper:]' '[:lower:]')
+                    local nom_clean=$(echo "$nom" | tr '[:upper:]' '[:lower:]' | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$nom" | tr '[:upper:]' '[:lower:]')
+                    
+                    # Ajouter directement au fichier
+                    echo "${prenom_clean}.${nom_clean}@${DOMAIN}    ${username}" >> "$alias_file"
+                    echo -e "${GREEN}[✓] ${prenom_clean}.${nom_clean}@${DOMAIN} → ${username}${NC}"
+                    count=$((count + 1))
+                fi
+            fi
+        fi
+    done
+    
+    # Mettre à jour la base de données Postfix
+    postmap "$alias_file" 2>/dev/null
+    systemctl reload postfix 2>/dev/null
+    
+    echo ""
+    echo -e "${GREEN}[✓] $count alias régénérés${NC}"
+    echo ""
+    echo "Fichier : $alias_file"
+    echo ""
+    echo "Commandes utiles :"
+    echo "  - Voir les alias : cat /etc/postfix/virtual"
+    echo "  - Tester un alias : postmap -q prenom.nom@${DOMAIN} /etc/postfix/virtual"
+}
+
+#############################################
+# Fonction : Configurer Active Directory
+#############################################
+configure_ad() {
+    echo -e "\n${BLUE}[INFO] Configuration Active Directory${NC}"
+    
+    read -p "Activer la synchronisation AD ? (y/n) : " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        AD_ENABLED=false
+        echo -e "${YELLOW}[!] Synchronisation AD désactivée${NC}"
+        return
+    fi
+    
+    read -p "Serveur AD (ex: ws-g4.ironsoft.local) : " AD_SERVER
+    read -p "Domaine AD (ex: ironsoft.local) : " AD_DOMAIN
+    read -p "Utilisateur admin AD (ex: administrateur) : " AD_ADMIN
+    read -p "OU de base (ex: OU=Users,DC=ironsoft,DC=local) : " AD_BASE_OU
+    
+    # Tester la connexion
+    echo -e "\n${YELLOW}[INFO] Test de connexion AD...${NC}"
+    if check_ad_connection; then
+        AD_ENABLED=true
+        echo -e "${GREEN}[✓] Configuration AD enregistrée${NC}"
+        
+        # Sauvegarder la config
+        save_ad_config
+    else
+        echo -e "${RED}[✗] Impossible de se connecter à AD${NC}"
+        AD_ENABLED=false
+    fi
+}
+
+#############################################
+# Fonction : Sauvegarder config AD
+#############################################
+save_ad_config() {
+    local config_file="/etc/mail_manager_ad.conf"
+    
+    cat > "$config_file" << EOF
+AD_ENABLED=$AD_ENABLED
+AD_SERVER=$AD_SERVER
+AD_DOMAIN=$AD_DOMAIN
+AD_ADMIN=$AD_ADMIN
+AD_BASE_OU=$AD_BASE_OU
+EOF
+    
+    chmod 600 "$config_file"
+    echo -e "${GREEN}[✓] Configuration sauvegardée dans $config_file${NC}"
+}
+
+#############################################
+# Fonction : Charger config AD
+#############################################
+load_ad_config() {
+    local config_file="/etc/mail_manager_ad.conf"
+    
+    if [ -f "$config_file" ]; then
+        source "$config_file"
+        echo -e "${GREEN}[✓] Configuration AD chargée${NC}"
+    fi
+}
+
+#############################################
+# Fonction : Vérifier connexion AD
+#############################################
+check_ad_connection() {
+    echo -e "${YELLOW}[INFO] Test de connexion au contrôleur de domaine Windows...${NC}"
+    
+    # Méthode 1 : Via LDAP direct (le plus simple et fiable)
+    if command -v ldapsearch &> /dev/null; then
+        read -sp "Mot de passe AD pour $AD_ADMIN : " ad_pass
+        echo
+        
+        AD_BIND_DN="CN=$AD_ADMIN,CN=Users,DC=${AD_DOMAIN//./,DC=}"
+        
+        if ldapsearch -x -H "ldap://$AD_SERVER" -D "$AD_BIND_DN" -w "$ad_pass" -b "$AD_BASE_OU" "(objectClass=user)" dn &>/dev/null; then
+            echo -e "${GREEN}[✓] Connexion AD réussie (LDAP)${NC}"
+            AD_PASSWORD="$ad_pass"
+            return 0
+        else
+            echo -e "${YELLOW}[!] Échec LDAP, test PowerShell...${NC}"
+        fi
+    else
+        echo -e "${YELLOW}[!] ldapsearch non disponible, installer avec: sudo apt-get install ldap-utils${NC}"
+    fi
+    
+    # Méthode 2 : Via PowerShell remote (universel mais nécessite WinRM sur Windows)
+    if command -v pwsh &> /dev/null || command -v powershell &> /dev/null; then
+        local ps_cmd="pwsh"
+        command -v pwsh &> /dev/null || ps_cmd="powershell"
+        
+        read -sp "Mot de passe AD pour $AD_ADMIN : " ad_pass
+        echo
+        
+        # Test simple de connexion
+        if $ps_cmd -Command "
+            try {
+                \$secpass = ConvertTo-SecureString '$ad_pass' -AsPlainText -Force
+                \$cred = New-Object System.Management.Automation.PSCredential('$AD_DOMAIN\\$AD_ADMIN', \$secpass)
+                
+                Invoke-Command -ComputerName $AD_SERVER -Credential \$cred -ScriptBlock {
+                    Get-ADDomain | Out-Null
+                } -ErrorAction Stop
+                exit 0
+            } catch {
+                exit 1
+            }
+        " &>/dev/null; then
+            echo -e "${GREEN}[✓] Connexion AD réussie (PowerShell)${NC}"
+            AD_PASSWORD="$ad_pass"
+            return 0
+        else
+            echo -e "${RED}[✗] Échec PowerShell - vérifier WinRM sur $AD_SERVER${NC}"
+        fi
+    else
+        echo -e "${YELLOW}[!] PowerShell non disponible${NC}"
+        echo "Installer PowerShell Core : https://docs.microsoft.com/powershell/scripting/install/install-ubuntu"
+    fi
+    
+    echo -e "${RED}[✗] Impossible de se connecter à AD${NC}"
+    echo ""
+    echo "Solutions :"
+    echo "  1. Installer LDAP : sudo apt-get install ldap-utils"
+    echo "  2. Installer PowerShell Core sur Linux"
+    echo "  3. Activer WinRM sur Windows AD : Enable-PSRemoting -Force"
+    return 1
+}
+
+#############################################
+# Fonction : Créer un groupe Linux
+#############################################
+create_linux_group() {
+    local groupname=$1
+    
+    if getent group "$groupname" &>/dev/null; then
+        echo -e "${YELLOW}[!] Groupe $groupname existe déjà${NC}"
+        return 0
+    fi
+    
+    groupadd "$groupname"
+    echo -e "${GREEN}[✓] Groupe Linux créé : $groupname${NC}"
+}
+
+#############################################
+# Fonction : Créer un utilisateur dans AD
+#############################################
+create_ad_user() {
+    local username=$1
+    local nom=$2
+    local prenom=$3
+    local password=$4
+    local groupes=$5
+    
+    if [ "$AD_ENABLED" = false ]; then
+        return 0
+    fi
+    
+    local displayname="$prenom $nom"
+    local upn="$username@$AD_DOMAIN"
+    
+    echo -e "${YELLOW}[AD] Création de $username dans Active Directory...${NC}"
+    
+    # Méthode 1 : PowerShell remote (RECOMMANDÉ)
+    if command -v pwsh &> /dev/null || command -v powershell &> /dev/null; then
+        local ps_cmd="pwsh"
+        command -v pwsh &> /dev/null || ps_cmd="powershell"
+        
+        # Créer l'utilisateur via PowerShell remote
+        if $ps_cmd -Command "
+            try {
+                \$secpass = ConvertTo-SecureString '$password' -AsPlainText -Force
+                \$cred = New-Object System.Management.Automation.PSCredential('$AD_DOMAIN\\$AD_ADMIN', (ConvertTo-SecureString '$AD_PASSWORD' -AsPlainText -Force))
+                
+                Invoke-Command -ComputerName $AD_SERVER -Credential \$cred -ScriptBlock {
+                    param(\$uname, \$fname, \$lname, \$dname, \$upn, \$mail, \$pass, \$ou)
+                    
+                    # Vérifier si l'utilisateur existe déjà
+                    if (Get-ADUser -Filter \"SamAccountName -eq '\$uname'\" -ErrorAction SilentlyContinue) {
+                        Write-Host \"Utilisateur existe déjà\"
+                        exit 1
+                    }
+                    
+                    # Créer l'utilisateur
+                    New-ADUser -Name \$dname \`
+                        -GivenName \$fname \`
+                        -Surname \$lname \`
+                        -SamAccountName \$uname \`
+                        -UserPrincipalName \$upn \`
+                        -EmailAddress \$mail \`
+                        -AccountPassword \$pass \`
+                        -Enabled \\\$true \`
+                        -Path \$ou \`
+                        -ErrorAction Stop
+                    
+                    exit 0
+                } -ArgumentList '$username', '$prenom', '$nom', '$displayname', '$upn', '$username@$DOMAIN', \$secpass, '$AD_BASE_OU' -ErrorAction Stop
+                
+                exit \$LASTEXITCODE
+            } catch {
+                Write-Error \$_.Exception.Message
+                exit 1
+            }
+        " &>/dev/null; then
+            echo -e "${GREEN}[✓] Utilisateur créé dans AD (PowerShell)${NC}"
+            
+            # Ajouter aux groupes AD si spécifié
+            if [ -n "$groupes" ]; then
+                IFS=',' read -ra GROUPS <<< "$groupes"
+                for group in "${GROUPS[@]}"; do
+                    group=$(echo "$group" | xargs)
+                    
+                    $ps_cmd -Command "
+                        \$cred = New-Object System.Management.Automation.PSCredential('$AD_DOMAIN\\$AD_ADMIN', (ConvertTo-SecureString '$AD_PASSWORD' -AsPlainText -Force))
+                        Invoke-Command -ComputerName $AD_SERVER -Credential \$cred -ScriptBlock {
+                            param(\$uname, \$grp)
+                            try {
+                                Add-ADGroupMember -Identity \$grp -Members \$uname -ErrorAction Stop
+                            } catch {
+                                Write-Host \"Groupe \$grp n'existe pas ou erreur\"
+                            }
+                        } -ArgumentList '$username', '$group'
+                    " &>/dev/null
+                    
+                    if [ $? -eq 0 ]; then
+                        echo -e "${GREEN}[✓] Ajouté au groupe AD : $group${NC}"
+                    else
+                        echo -e "${YELLOW}[!] Groupe AD $group non trouvé (créer manuellement)${NC}"
+                    fi
+                done
+            fi
+            return 0
+        else
+            echo -e "${YELLOW}[!] Échec PowerShell, tentative LDAP...${NC}"
+        fi
+    fi
+    
+    # Méthode 2 : LDAP direct
+    if command -v ldapadd &> /dev/null; then
+        local ldif_file="/tmp/ad_user_$username.ldif"
+        local user_dn="CN=$displayname,$AD_BASE_OU"
+        
+        # Créer le fichier LDIF
+        cat > "$ldif_file" << EOF
+dn: $user_dn
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: user
+cn: $displayname
+sn: $nom
+givenName: $prenom
+sAMAccountName: $username
+userPrincipalName: $upn
+mail: $username@$DOMAIN
+userAccountControl: 512
+EOF
+        
+        AD_BIND_DN="CN=$AD_ADMIN,CN=Users,DC=${AD_DOMAIN//./,DC=}"
+        
+        # Ajouter l'utilisateur
+        if ldapadd -x -H "ldap://$AD_SERVER" -D "$AD_BIND_DN" -w "$AD_PASSWORD" -f "$ldif_file" &>/dev/null; then
+            echo -e "${GREEN}[✓] Utilisateur créé dans AD (LDAP)${NC}"
+            
+            # Définir le mot de passe
+            # Note: Nécessite normalement LDAPS (port 636) en production
+            echo -e "${YELLOW}[!] Mot de passe AD : définir manuellement ou via LDAPS${NC}"
+            
+            rm -f "$ldif_file"
+            return 0
+        else
+            echo -e "${RED}[✗] Échec création LDAP${NC}"
+        fi
+        
+        rm -f "$ldif_file"
+    fi
+    
+    echo -e "${RED}[✗] Échec de création dans AD${NC}"
+    echo "Vérifier :"
+    echo "  - WinRM activé sur $AD_SERVER (PowerShell)"
+    echo "  - Port LDAP 389 accessible (LDAP)"
+    echo "  - Permissions du compte $AD_ADMIN"
+    return 1
+}
+
+#############################################
+# Fonction : Créer plusieurs utilisateurs depuis une liste
+#############################################
+create_users_from_list() {
+    echo -e "\n${BLUE}[INFO] Création d'utilisateurs depuis une liste${NC}"
+    echo ""
+    echo "Format attendu : username,nom,prenom,password,groupes,sync_ad"
+    echo "Exemple : jdupont,Dupont,Jean,password123,\"dev,users\",yes"
+    echo ""
+    echo "Options :"
+    echo "1) Importer depuis un fichier CSV"
+    echo "2) Saisir interactivement plusieurs utilisateurs"
+    echo "3) Retour"
+    echo ""
+    read -p "Choix : " import_choice
+    
+    case $import_choice in
+        1)
+            read -p "Chemin du fichier CSV : " csv_file
+            if [ ! -f "$csv_file" ]; then
+                echo -e "${RED}[✗] Fichier non trouvé : $csv_file${NC}"
+                return
+            fi
+            
+            echo -e "\n${YELLOW}[INFO] Lecture du fichier...${NC}"
+            line_count=0
+            success_count=0
+            
+            while IFS=',' read -r username nom prenom password groupes sync_ad || [ -n "$username" ]; do
+                # Ignorer les lignes vides et les commentaires
+                [[ -z "$username" || "$username" =~ ^#.* ]] && continue
+                
+                line_count=$((line_count + 1))
+                
+                # Nettoyer les espaces et guillemets
+                username=$(echo "$username" | xargs)
+                nom=$(echo "$nom" | xargs)
+                prenom=$(echo "$prenom" | xargs)
+                password=$(echo "$password" | xargs)
+                groupes=$(echo "$groupes" | xargs | tr -d '"')
+                sync_ad=$(echo "$sync_ad" | xargs)
+                
+                if create_single_user "$username" "$nom" "$prenom" "$password" "$groupes" "$sync_ad"; then
+                    success_count=$((success_count + 1))
+                fi
+            done < "$csv_file"
+            
+            echo -e "\n${GREEN}[✓] $success_count/$line_count utilisateurs créés avec succès${NC}"
+            ;;
+            
+        2)
+            echo -e "\n${YELLOW}[INFO] Saisie interactive (tapez 'fin' pour terminer)${NC}"
+            count=0
+            
+            while true; do
+                echo -e "\n${BLUE}--- Utilisateur $((count + 1)) ---${NC}"
+                read -p "Username (ou 'fin' pour terminer) : " username
+                
+                [[ "$username" == "fin" ]] && break
+                
+                read -p "Nom : " nom
+                read -p "Prénom : " prenom
+                read -sp "Mot de passe : " password
+                echo
+                read -p "Groupes (séparés par virgules, ex: dev,users) : " groupes
+                read -p "Synchroniser avec AD ? (y/n) : " -n 1 -r sync_ad
+                echo
+                
+                [[ $sync_ad =~ ^[Yy]$ ]] && sync_ad="yes" || sync_ad="no"
+                
+                if create_single_user "$username" "$nom" "$prenom" "$password" "$groupes" "$sync_ad"; then
+                    count=$((count + 1))
+                fi
+            done
+            
+            echo -e "\n${GREEN}[✓] $count utilisateurs créés${NC}"
+            ;;
+            
+        3)
+            return
+            ;;
+    esac
+}
+
+#############################################
+# Fonction : Créer un alias mail
+#############################################
+create_mail_alias() {
+    local username=$1
+    local prenom=$2
+    local nom=$3
+    
+    # Vérifier que prénom et nom sont fournis
+    if [ -z "$prenom" ] || [ -z "$nom" ]; then
+        return 0
+    fi
+    
+    # Normaliser prénom et nom (minuscules, sans accents)
+    prenom=$(echo "$prenom" | tr '[:upper:]' '[:lower:]' | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$prenom" | tr '[:upper:]' '[:lower:]')
+    nom=$(echo "$nom" | tr '[:upper:]' '[:lower:]' | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$nom" | tr '[:upper:]' '[:lower:]')
+    
+    # Créer l'alias prenom.nom
+    local alias_email="${prenom}.${nom}@${DOMAIN}"
+    local alias_file="/etc/postfix/virtual"
+    
+    # Créer le fichier virtual s'il n'existe pas
+    if [ ! -f "$alias_file" ]; then
+        touch "$alias_file"
+    fi
+    
+    # Vérifier si l'alias existe déjà
+    if grep -q "^${prenom}.${nom}@${DOMAIN}" "$alias_file" 2>/dev/null; then
+        return 0
+    fi
+    
+    # Ajouter l'alias
+    echo "${prenom}.${nom}@${DOMAIN}    ${username}" >> "$alias_file"
+    
+    # Mettre à jour la base de données Postfix
+    postmap "$alias_file" 2>/dev/null
+    
+    echo -e "${GREEN}[✓] Alias créé : ${prenom}.${nom}@${DOMAIN} → ${username}${NC}"
+}
+
+#############################################
+# Fonction : Configurer les alias virtuels Postfix
+#############################################
+configure_virtual_aliases() {
+    local alias_file="/etc/postfix/virtual"
+    local main_cf="/etc/postfix/main.cf"
+    
+    # Vérifier si virtual_alias_maps est déjà configuré
+    if ! grep -q "^virtual_alias_maps" "$main_cf" 2>/dev/null; then
+        echo ""
+        echo "virtual_alias_maps = hash:${alias_file}" >> "$main_cf"
+        echo -e "${GREEN}[✓] Configuration virtual_alias_maps ajoutée${NC}"
+    fi
+    
+    # Vérifier si virtual_alias_domains est configuré
+    if ! grep -q "^virtual_alias_domains" "$main_cf" 2>/dev/null; then
+        echo "virtual_alias_domains = ${DOMAIN}" >> "$main_cf"
+        echo -e "${GREEN}[✓] Configuration virtual_alias_domains ajoutée${NC}"
+    fi
+    
+    # Recharger Postfix
+    systemctl reload postfix 2>/dev/null
+}
+
+#############################################
+# Fonction : Créer un utilisateur unique (helper)
+#############################################
+create_single_user() {
+    local username=$1
+    local nom=$2
+    local prenom=$3
+    local password=$4
+    local groupes=$5
+    local sync_ad=$6
+    
+    # Validation
+    if [ -z "$username" ] || [ -z "$password" ]; then
+        echo -e "${RED}[✗] Username et password requis${NC}"
+        return 1
+    fi
+    
+    echo -e "\n${BLUE}=== Création de $username ===${NC}"
+    
+    # Créer les groupes Linux si nécessaire
+    if [ -n "$groupes" ]; then
+        IFS=',' read -ra GROUPS <<< "$groupes"
+        for group in "${GROUPS[@]}"; do
+            group=$(echo "$group" | xargs)
+            create_linux_group "$group"
+        done
+    fi
+    
+    # Vérifier si l'utilisateur existe déjà
+    if id "$username" &>/dev/null; then
+        echo -e "${YELLOW}[!] L'utilisateur $username existe déjà - mis à jour${NC}"
+    else
+        # Créer l'utilisateur avec les infos GECOS
+        if [ -n "$nom" ] && [ -n "$prenom" ]; then
+            useradd -m -s /bin/bash -c "$prenom $nom" "$username"
+        else
+            useradd -m -s /bin/bash "$username"
+        fi
+        echo -e "${GREEN}[✓] Utilisateur Linux créé : $username${NC}"
+    fi
+    
+    # Définir le mot de passe (utiliser printf pour éviter les problèmes d'échappement)
+    printf "%s:%s\n" "$username" "$password" | chpasswd
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}[✗] Erreur lors de la définition du mot de passe pour $username${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}[✓] Mot de passe défini${NC}"
+    
+    # Ajouter aux groupes Linux
+    if [ -n "$groupes" ]; then
+        IFS=',' read -ra GROUPS <<< "$groupes"
+        for group in "${GROUPS[@]}"; do
+            group=$(echo "$group" | xargs)
+            usermod -aG "$group" "$username"
+            echo -e "${GREEN}[✓] Ajouté au groupe Linux : $group${NC}"
+        done
+    fi
+    
+    # Toujours ajouter au groupe mail
+    usermod -aG mail "$username"
+    
+    # Créer la boîte mail
+    touch "/var/mail/$username"
+    chown "$username:mail" "/var/mail/$username"
+    chmod 660 "/var/mail/$username"
+    echo -e "${GREEN}[✓] Boîte mail créée${NC}"
+    
+    # Créer l'alias mail prenom.nom@domain
+    if [ -n "$nom" ] && [ -n "$prenom" ]; then
+        # Configurer virtual aliases si première fois
+        configure_virtual_aliases
+        # Créer l'alias
+        create_mail_alias "$username" "$prenom" "$nom"
+    fi
+    
+    # Synchroniser avec AD si demandé
+    if [[ "$sync_ad" =~ ^[Yy]|yes$ ]]; then
+        create_ad_user "$username" "$nom" "$prenom" "$password" "$groupes"
+    fi
+    
+    # Afficher résumé
+    if [ -n "$nom" ] && [ -n "$prenom" ]; then
+        local prenom_clean=$(echo "$prenom" | tr '[:upper:]' '[:lower:]' | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$prenom" | tr '[:upper:]' '[:lower:]')
+        local nom_clean=$(echo "$nom" | tr '[:upper:]' '[:lower:]' | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$nom" | tr '[:upper:]' '[:lower:]')
+        echo -e "${GREEN}[✓] $username@$DOMAIN ← ${prenom_clean}.${nom_clean}@$DOMAIN (${prenom} ${nom})${NC}"
+    else
+        echo -e "${GREEN}[✓] $username@$DOMAIN${NC}"
+    fi
+    
+    return 0
+}
+
+
+#############################################
+# Fonction : Créer les utilisateurs Iron4Software (préchargé)
+#############################################
+create_iron4software_users() {
+    echo -e "\n${BLUE}╔════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║  UTILISATEURS IRON4SOFTWARE (PRÉCHARGÉ)   ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Créer le fichier temporaire avec les utilisateurs
+    local temp_csv="/tmp/iron4software_users.csv"
+    
+    cat > "$temp_csv" << 'EOF'
+# Fichier d'utilisateurs Iron4Software
+# Format: username,nom,prenom,password,groupes,sync_ad
+
+# Direction (3 utilisateurs)
+emoreau,Moreau,Elise,password123,"direction,users",yes
+troussel,Roussel,Thomas,password123,"direction,users",yes
+mchevreau,Chevreau,Marion,password123,"direction,users",yes
+
+# Secrétariat (2 utilisateurs)
+sberanger,Beranger,Sophie,Sosol982,"secretariat,users",yes
+bcolin,Colin,Benjamin,password123,"secretariat,users",yes
+
+# Comptabilité (3 utilisateurs)
+nlefevre,Lefèvre,Nina,password123,"comptabilite,users",yes
+jmorel,Morel,Julien,password123,"comptabilite,users",yes
+croche,Roche,Camille,password123,"comptabilite,users",yes
+
+# Vente (3 utilisateurs)
+ylanglois,Langlois,Yanis,password123,"vente,users",yes
+svilledieu,Villedieu,Sarah,password123,"vente,users",yes
+lbernard,Bernard,Loic,password123,"vente,users",yes
+
+# IT (15 utilisateurs)
+kdelaunay,Delaunay,Karim,password123,"it,users",yes
+jcaron,Caron,Jules,password123,"it,users",yes
+gporte,Porte,Guillaume,guillaume123,"it,users",yes
+aduval,Duval,Anais,password123,"it,users",yes
+lbenelli,Benelli,Lucas,password123,"it,users",yes
+bhernandez,Hernandez,Bruno,21031988,"it,users",yes
+plejuste,Lejuste,Pierre,password123,"it,users",yes
+ncharlier,Charlier,Noé,password123,"it,users",yes
+igauthier,Gauthier,Inès,password123,"it,users",yes
+vrenard,Renard,Victor,password123,"it,users",yes
+alemoine,Lemoine,Adrien,password123,"it,users",yes
+rlefort,Lefort,Rayan,password123,"it,users",yes
+ebaron,Baron,Emile,password123,"it,users",yes
+mbourdon,Bourdon,Maya,password123,"it,users",yes
+EOF
+
+    echo -e "${YELLOW}[INFO] Fichier préchargé détecté :${NC}"
+    echo "  ✓ 26 utilisateurs Iron4Software"
+    echo "  ✓ 5 départements"
+    echo ""
+    echo "Départements :"
+    echo "  - Direction (3)"
+    echo "  - Secrétariat (2)"
+    echo "  - Comptabilité (3)"
+    echo "  - Vente (3)"
+    echo "  - IT (15)"
+    echo ""
+    
+    read -p "Créer ces 26 utilisateurs maintenant ? (y/n) : " -n 1 -r
+    echo
+    
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        rm -f "$temp_csv"
+        echo -e "${YELLOW}[!] Annulé${NC}"
+        return
+    fi
+    
+    echo -e "\n${BLUE}[INFO] Import en cours...${NC}\n"
+    
+    line_count=0
+    success_count=0
+    
+    while IFS=',' read -r username nom prenom password groupes sync_ad || [ -n "$username" ]; do
+        # Ignorer les lignes vides et les commentaires
+        [[ -z "$username" || "$username" =~ ^#.* ]] && continue
+        
+        line_count=$((line_count + 1))
+        
+        # Nettoyer les espaces et guillemets
+        username=$(echo "$username" | xargs)
+        nom=$(echo "$nom" | xargs)
+        prenom=$(echo "$prenom" | xargs)
+        password=$(echo "$password" | xargs)
+        groupes=$(echo "$groupes" | xargs | tr -d '"')
+        sync_ad=$(echo "$sync_ad" | xargs)
+        
+        if create_single_user "$username" "$nom" "$prenom" "$password" "$groupes" "$sync_ad"; then
+            success_count=$((success_count + 1))
+        fi
+    done < "$temp_csv"
+    
+    rm -f "$temp_csv"
+    
+    echo -e "\n${GREEN}╔════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║       IMPORT TERMINÉ !                    ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${GREEN}✓ $success_count/$line_count utilisateurs créés${NC}"
+    echo ""
+    echo "Groupes créés :"
+    echo "  - direction (3 users)"
+    echo "  - secretariat (2 users)" 
+    echo "  - comptabilite (3 users)"
+    echo "  - vente (3 users)"
+    echo "  - it (15 users)"
+    echo "  - users (tous)"
+    echo ""
+    
+    if [ "$AD_ENABLED" = true ]; then
+        echo -e "${GREEN}✓ Utilisateurs synchronisés avec Active Directory${NC}"
+    fi
+}
+
+#############################################
+# Fonction : Créer des utilisateurs pour lab
+#############################################
+create_lab_users() {
+    echo -e "\n${BLUE}[INFO] Création d'utilisateurs pour lab de pentest...${NC}"
+    
+    declare -A users=(
+        ["guillaume"]="guillaume123"
+        ["sophie"]="azerty"
+        ["admin"]="Admin2024!"
+        ["service"]="service"
+        ["webmail"]="webmail123"
+    )
+    
+    for user in "${!users[@]}"; do
+        pass="${users[$user]}"
+        create_single_user "$user" "" "" "$pass" "" "no"
+    done
+    
+    echo -e "\n${YELLOW}[INFO] Utilisateurs créés pour bruteforce/pentest${NC}"
+}
+
+#############################################
+# Fonction : Générer un fichier exemple CSV
+#############################################
+generate_csv_example() {
+    local csv_file="/tmp/users_example.csv"
+    
+    cat > "$csv_file" << 'EOF'
+# Fichier exemple pour l'import d'utilisateurs
+# Format: username,nom,prenom,password,groupes,sync_ad
+# Les lignes commençant par # sont ignorées
+# groupes : séparés par virgules entre guillemets si plusieurs
+# sync_ad : yes/no pour synchroniser avec Active Directory
+
+# Exemples d'utilisateurs avec groupes
+jdupont,Dupont,Jean,password123,"dev,users",yes
+mmartin,Martin,Marie,azerty,"marketing,users",yes
+pdurand,Durand,Pierre,pierre123,"dev,admin",yes
+lbernard,Bernard,Luc,luc2024,"users",yes
+sthomas,Thomas,Sophie,sophie456,"rh,users",yes
+
+# Exemples avec mots de passe faibles (pour bruteforce)
+agarcia,Garcia,Antoine,123456,"users",no
+cleroy,Leroy,Claire,password,"users",no
+nroux,Roux,Nicolas,azerty123,"users",no
+erobert,Robert,Emma,123soleil,"users",no
+
+# Exemples d'utilisateurs admin
+adminit,Admin,IT,Admin2024!,"admin,users",yes
+support,Support,Technique,Support@123,"support,users",yes
+direction,Direction,Generale,Direct2024!,"admin,direction",yes
+
+# Exemples de comptes de service (sans sync AD)
+webmaster,Webmaster,Service,webmaster99,"www-data",no
+contact,Contact,Public,contact2024,"mail",no
+info,Information,Generale,info123,"mail",no
+EOF
+
+    echo -e "${GREEN}[✓] Fichier exemple créé : $csv_file${NC}"
+    echo -e "${YELLOW}[INFO] Contenu :${NC}"
+    cat "$csv_file"
+    echo ""
+    
+    echo -e "${YELLOW}[INFO] Groupes détectés dans le fichier :${NC}"
+    grep -v "^#" "$csv_file" | grep -v "^$" | cut -d',' -f5 | tr -d '"' | tr ',' '\n' | sort -u | grep -v "^$" | while read group; do
+        echo "  - $group"
+    done
+    
+    echo ""
+    read -p "Utiliser ce fichier pour créer les utilisateurs ? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        create_users_from_list_file "$csv_file"
+    fi
+}
+
+#############################################
+# Fonction : Créer utilisateurs depuis CSV (direct)
+#############################################
+create_users_from_list_file() {
+    local csv_file=$1
+    
+    echo -e "\n${YELLOW}[INFO] Lecture du fichier...${NC}"
+    line_count=0
+    success_count=0
+    
+    while IFS=',' read -r username nom prenom password || [ -n "$username" ]; do
+        # Ignorer les lignes vides et les commentaires
+        [[ -z "$username" || "$username" =~ ^#.* ]] && continue
+        
+        line_count=$((line_count + 1))
+        
+        # Nettoyer les espaces
+        username=$(echo "$username" | xargs)
+        nom=$(echo "$nom" | xargs)
+        prenom=$(echo "$prenom" | xargs)
+        password=$(echo "$password" | xargs)
+        
+        if create_single_user "$username" "$nom" "$prenom" "$password"; then
+            success_count=$((success_count + 1))
+        fi
+    done < "$csv_file"
+    
+    echo -e "\n${GREEN}[✓] $success_count/$line_count utilisateurs créés avec succès${NC}"
+}
+
+#############################################
+# Fonction : Afficher les logs
+#############################################
+show_logs() {
+    echo -e "\n${BLUE}[INFO] Derniers logs mail...${NC}"
+    echo -e "${YELLOW}=== Postfix ===${NC}"
+    tail -20 /var/log/mail.log | grep postfix
+    
+    echo -e "\n${YELLOW}=== Dovecot ===${NC}"
+    tail -20 /var/log/mail.log | grep dovecot
+    
+    echo -e "\n${YELLOW}=== Authentification ===${NC}"
+    tail -20 /var/log/mail.log | grep -i "auth\|login"
+}
+
+#############################################
+# Fonction : Menu principal
+#############################################
+show_menu() {
+    echo -e "\n${BLUE}╔════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║        MENU PRINCIPAL              ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════╝${NC}"
+    
+    # Afficher statut AD
+    if [ "$AD_ENABLED" = true ]; then
+        echo -e "${GREEN}[AD ACTIVÉ] $AD_SERVER${NC}"
+    else
+        echo -e "${YELLOW}[AD DÉSACTIVÉ]${NC}"
+    fi
+    
+    echo ""
+    echo "1) Vérifier les services"
+    echo "2) Vérifier la configuration complète"
+    echo "3) Créer un utilisateur"
+    echo "4) Créer plusieurs utilisateurs (liste/CSV)"
+    echo "5) Lister les utilisateurs mail"
+    echo "6) Réparer les permissions"
+    echo "7) Créer des utilisateurs de lab (pentest)"
+    echo "8) Créer les utilisateurs Iron4Software (26 users préchargés) 🆕"
+    echo "9) Générer un fichier CSV exemple"
+    echo "10) Configurer Active Directory"
+    echo "11) Régénérer tous les alias mail (prenom.nom) 🆕"
+    echo "12) Afficher les logs"
+    echo "13) Redémarrer tous les services"
+    echo "14) Quitter"
+    echo ""
+    read -p "Choix : " choice
+    
+    case $choice in
+        1) check_services ;;
+        2) check_config ;;
+        3) create_user ;;
+        4) create_users_from_list ;;
+        5) list_users ;;
+        6) fix_permissions ;;
+        7) create_lab_users ;;
+        8) create_iron4software_users ;;
+        9) generate_csv_example ;;
+        10) configure_ad ;;
+        11) regenerate_all_aliases ;;
+        12) show_logs ;;
+        13) 
+            systemctl restart postfix dovecot apache2
+            echo -e "${GREEN}[✓] Services redémarrés${NC}"
+            ;;
+        14) 
+            echo -e "${GREEN}Au revoir !${NC}"
+            exit 0
+            ;;
+        *) 
+            echo -e "${RED}Choix invalide${NC}"
+            ;;
+    esac
+    
+    read -p "Appuyer sur Entrée pour continuer..."
+}
+
+#############################################
+# MAIN
+#############################################
+check_root
+load_ad_config
+
+# Boucle du menu
+while true; do
+    clear
+    echo -e "${BLUE}"
+    echo "================================================"
+    echo "   Iron4Software - Mail Server Manager"
+    echo "   Domaine : $DOMAIN"
+    echo "================================================"
+    echo -e "${NC}"
+    show_menu
 done

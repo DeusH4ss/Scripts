@@ -326,37 +326,38 @@ if (Test-Path `$ThunderbirdConfigPath) {
     
     `$ConfigFile = Join-Path `$ThunderbirdConfigPath "iron4software-autoconfig.js"
     
-    `$ConfigContent = @"
-// Configuration automatique Iron4Software
-// Ce fichier configure Thunderbird automatiquement pour tous les utilisateurs
-
-// Configuration du serveur mail
-pref("mail.identity.default.useremail", "");
-pref("mail.identity.default.fullName", "");
-
-// Serveur IMAP
-pref("mail.server.default.type", "imap");
-pref("mail.server.default.hostname", "$MailServer");
-pref("mail.server.default.port", 143);
-pref("mail.server.default.socketType", 2); // STARTTLS
-pref("mail.server.default.authMethod", 3); // Mot de passe normal
-
-// Serveur SMTP
-pref("mail.smtpserver.default.hostname", "$MailServer");
-pref("mail.smtpserver.default.port", 25);
-pref("mail.smtpserver.default.authMethod", 0); // Pas d'authentification
-
-// Paramètres généraux
-pref("mailnews.start_page.enabled", false);
-pref("mail.rights.version", 1);
-pref("mail.shell.checkDefaultClient", false);
-
-// Désactiver les mises à jour automatiques (géré par GPO)
-pref("app.update.enabled", false);
-pref("app.update.auto", false);
-"@
+    # Créer le contenu de configuration (sans heredoc imbriqué)
+    `$ConfigLines = @(
+        '// Configuration automatique Iron4Software',
+        '// Ce fichier configure Thunderbird automatiquement pour tous les utilisateurs',
+        '',
+        '// Configuration du serveur mail',
+        'pref("mail.identity.default.useremail", "");',
+        'pref("mail.identity.default.fullName", "");',
+        '',
+        '// Serveur IMAP',
+        'pref("mail.server.default.type", "imap");',
+        'pref("mail.server.default.hostname", "$MailServer");',
+        'pref("mail.server.default.port", 143);',
+        'pref("mail.server.default.socketType", 2); // STARTTLS',
+        'pref("mail.server.default.authMethod", 3); // Mot de passe normal',
+        '',
+        '// Serveur SMTP',
+        'pref("mail.smtpserver.default.hostname", "$MailServer");',
+        'pref("mail.smtpserver.default.port", 25);',
+        'pref("mail.smtpserver.default.authMethod", 0); // Pas d''authentification',
+        '',
+        '// Paramètres généraux',
+        'pref("mailnews.start_page.enabled", false);',
+        'pref("mail.rights.version", 1);',
+        'pref("mail.shell.checkDefaultClient", false);',
+        '',
+        '// Désactiver les mises à jour automatiques (géré par GPO)',
+        'pref("app.update.enabled", false);',
+        'pref("app.update.auto", false);'
+    )
     
-    `$ConfigContent | Out-File -FilePath `$ConfigFile -Encoding ASCII -Force
+    `$ConfigLines | Out-File -FilePath `$ConfigFile -Encoding ASCII -Force
     Write-Log "Configuration créée : `$ConfigFile"
 }
 

@@ -33,6 +33,33 @@ Write-Host "====================================================================
 Write-Host ""
 
 # ============================================================================
+# VÉRIFICATION / CRÉATION DE L'OU
+# ============================================================================
+
+Write-Host "[INFO] Vérification de l'Organizational Unit..." -ForegroundColor Cyan
+
+# Vérifier si l'OU existe
+try {
+    $OUExists = Get-ADOrganizationalUnit -Filter "DistinguishedName -eq '$OU'" -ErrorAction SilentlyContinue
+    
+    if (-not $OUExists) {
+        Write-Host "  L'OU n'existe pas, création..." -NoNewline
+        New-ADOrganizationalUnit -Name "Users" -Path "DC=ironsoft,DC=local" -ProtectedFromAccidentalDeletion $false
+        Write-Host " [OK]" -ForegroundColor Green
+    }
+    else {
+        Write-Host "  OU existe déjà : $OU" -ForegroundColor Green
+    }
+}
+catch {
+    Write-Host "  [ATTENTION] Impossible de créer l'OU" -ForegroundColor Yellow
+    Write-Host "  → Utilisation du conteneur par défaut : CN=Users,DC=ironsoft,DC=local" -ForegroundColor Yellow
+    $OU = "CN=Users,DC=ironsoft,DC=local"
+}
+
+Write-Host ""
+
+# ============================================================================
 # PARTIE 1 : CRÉATION DES UTILISATEURS
 # ============================================================================
 
@@ -137,7 +164,7 @@ foreach ($User in $Users) {
     }
     catch {
         Write-Host " [ERREUR]" -ForegroundColor Red
-        Write-Host "    → $_" -ForegroundColor Red
+        Write-Host "    → $($_.Exception.Message)" -ForegroundColor Red
         $UserFailCount++
     }
 }

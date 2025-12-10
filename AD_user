@@ -475,3 +475,8 @@ Write-Host ""
 
 Write-Host "============================================================================" -ForegroundColor Cyan
 Write-Host ""
+
+# Pause pour voir les résultats
+Write-Host ""
+Write-Host "Appuyez sur une touche pour fermer cette fenêtre..." -ForegroundColor Yellow
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")

@@ -42,6 +42,77 @@ check_root() {
 }
 
 #############################################
+# Fonction : Vérifier et installer les dépendances
+#############################################
+check_and_install_dependencies() {
+    echo -e "\n${BLUE}[INFO] Vérification des dépendances...${NC}"
+    
+    local missing_deps=()
+    local to_install=()
+    
+    # Vérifier les dépendances de base
+    command -v postfix &>/dev/null || missing_deps+=("postfix")
+    command -v dovecot &>/dev/null || missing_deps+=("dovecot-core dovecot-imapd")
+    command -v apache2 &>/dev/null || missing_deps+=("apache2")
+    
+    # Vérifier openssl (pour hash des mots de passe)
+    command -v openssl &>/dev/null || missing_deps+=("openssl")
+    
+    # Vérifier ldapsearch (pour Active Directory - optionnel)
+    if [ "$AD_ENABLED" = true ]; then
+        command -v ldapsearch &>/dev/null || missing_deps+=("ldap-utils")
+    fi
+    
+    # Vérifier PowerShell (pour Active Directory - optionnel)
+    if [ "$AD_ENABLED" = true ]; then
+        if ! command -v pwsh &>/dev/null; then
+            echo -e "${YELLOW}[!] PowerShell Core non installé${NC}"
+            echo -e "${YELLOW}[!] Pour Active Directory, installez PowerShell :${NC}"
+            echo "    wget https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb"
+            echo "    dpkg -i packages-microsoft-prod.deb"
+            echo "    apt-get update && apt-get install -y powershell"
+        fi
+    fi
+    
+    # Afficher les dépendances manquantes
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        echo -e "${YELLOW}[!] Dépendances manquantes détectées :${NC}"
+        for dep in "${missing_deps[@]}"; do
+            echo "  - $dep"
+        done
+        echo ""
+        
+        read -p "Installer les dépendances manquantes maintenant ? (y/n) : " -n 1 -r
+        echo
+        
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "\n${BLUE}[INFO] Installation des dépendances...${NC}"
+            
+            # Mettre à jour les repos
+            apt-get update -qq
+            
+            # Installer les paquets manquants
+            for dep in "${missing_deps[@]}"; do
+                echo -e "${YELLOW}[INFO] Installation de $dep...${NC}"
+                DEBIAN_FRONTEND=noninteractive apt-get install -y $dep
+                
+                if [ $? -eq 0 ]; then
+                    echo -e "${GREEN}[✓] $dep installé${NC}"
+                else
+                    echo -e "${RED}[✗] Échec de l'installation de $dep${NC}"
+                fi
+            done
+            
+            echo -e "\n${GREEN}[✓] Installation des dépendances terminée${NC}"
+        else
+            echo -e "${YELLOW}[!] Certaines fonctionnalités peuvent ne pas fonctionner${NC}"
+        fi
+    else
+        echo -e "${GREEN}[✓] Toutes les dépendances sont installées${NC}"
+    fi
+}
+
+#############################################
 # Fonction : Vérifier les services
 #############################################
 check_services() {
@@ -164,8 +235,19 @@ create_user() {
             ;;
     esac
     
-    # Définir le mot de passe (utiliser printf pour éviter les problèmes d'échappement)
-    printf "%s:%s\n" "$username" "$password" | chpasswd
+    # Définir le mot de passe (méthode robuste avec fichier temporaire)
+    local temp_passwd_file=$(mktemp)
+    echo "$username:$password" > "$temp_passwd_file"
+    chpasswd < "$temp_passwd_file" 2>/dev/null
+    local chpasswd_result=$?
+    rm -f "$temp_passwd_file"
+    
+    if [ $chpasswd_result -ne 0 ]; then
+        # Fallback : utiliser usermod avec hash
+        local hashed_password=$(openssl passwd -6 "$password" 2>/dev/null || openssl passwd -1 "$password")
+        usermod -p "$hashed_password" "$username"
+        [ $? -ne 0 ] && echo -e "${YELLOW}[!] Avertissement: problème de mot de passe${NC}"
+    fi
     
     # Créer la boîte mail
     touch "/var/mail/$username"
@@ -481,10 +563,26 @@ check_ad_connection() {
     
     echo -e "${RED}[✗] Impossible de se connecter à AD${NC}"
     echo ""
-    echo "Solutions :"
-    echo "  1. Installer LDAP : sudo apt-get install ldap-utils"
-    echo "  2. Installer PowerShell Core sur Linux"
-    echo "  3. Activer WinRM sur Windows AD : Enable-PSRemoting -Force"
+    echo -e "${YELLOW}╔════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║        CONFIGURATION WINDOWS AD REQUISE                ║${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo "Sur le serveur Windows AD ($AD_SERVER), exécuter dans PowerShell (Admin) :"
+    echo ""
+    echo "  Enable-PSRemoting -Force"
+    echo "  Set-Item WSMan:\localhost\Client\TrustedHosts * -Force"
+    echo "  Restart-Service WinRM"
+    echo ""
+    echo "Vérifier que WinRM écoute :"
+    echo "  Test-WSMan -ComputerName $AD_SERVER"
+    echo "  Get-Service WinRM"
+    echo ""
+    echo "Si le firewall bloque :"
+    echo "  New-NetFirewallRule -Name 'WinRM-HTTP' -DisplayName 'WinRM HTTP' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5985"
+    echo ""
+    echo "Alternative : Installer LDAP sur Linux (plus simple) :"
+    echo "  sudo apt-get install ldap-utils"
+    echo ""
     return 1
 }
 
@@ -833,14 +931,26 @@ create_single_user() {
         echo -e "${GREEN}[✓] Utilisateur Linux créé : $username${NC}"
     fi
     
-    # Définir le mot de passe (utiliser printf pour éviter les problèmes d'échappement)
-    printf "%s:%s\n" "$username" "$password" | chpasswd
+    # Définir le mot de passe (méthode robuste avec fichier temporaire)
+    local temp_passwd_file=$(mktemp)
+    echo "$username:$password" > "$temp_passwd_file"
+    chpasswd < "$temp_passwd_file" 2>/dev/null
+    local chpasswd_result=$?
+    rm -f "$temp_passwd_file"
     
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}[✗] Erreur lors de la définition du mot de passe pour $username${NC}"
-        return 1
+    if [ $chpasswd_result -ne 0 ]; then
+        # Fallback : utiliser usermod avec hash OpenSSL
+        local hashed_password=$(openssl passwd -6 "$password" 2>/dev/null || openssl passwd -1 "$password")
+        usermod -p "$hashed_password" "$username"
+        if [ $? -eq 0 ]; then
+            echo -e "${YELLOW}[!] Mot de passe défini via usermod (fallback)${NC}"
+        else
+            echo -e "${RED}[✗] Erreur lors de la définition du mot de passe pour $username${NC}"
+            return 1
+        fi
+    else
+        echo -e "${GREEN}[✓] Mot de passe défini${NC}"
     fi
-    echo -e "${GREEN}[✓] Mot de passe défini${NC}"
     
     # Ajouter aux groupes Linux
     if [ -n "$groupes" ]; then
@@ -1195,6 +1305,7 @@ show_menu() {
 #############################################
 check_root
 load_ad_config
+check_and_install_dependencies
 
 # Boucle du menu
 while true; do

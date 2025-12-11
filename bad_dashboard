@@ -1,0 +1,308 @@
+#!/bin/bash
+
+##############################################
+# Dashboard INCOMPLET - Exercice de Détection
+# Auteur: Philippe - Iron4Software
+# Date: 2024
+# ATTENTION: Ce dashboard semble fonctionnel mais
+# manque d'informations CRITIQUES de sécurité
+##############################################
+
+# Configuration
+SPLUNK_HOST="192.168.1.253"
+SPLUNK_PORT="8000"
+SPLUNK_USER="admin"
+SPLUNK_PASSWORD="Admin123G4"
+DASHBOARD_ID="incomplete_security_dashboard"
+DASHBOARD_TITLE="🔍 Dashboard de Sécurité - Exercice : Qu'est-ce qui manque ?"
+
+# Couleurs pour l'affichage
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${YELLOW}============================================${NC}"
+echo -e "${YELLOW}Dashboard INCOMPLET - Exercice${NC}"
+echo -e "${YELLOW}============================================${NC}\n"
+
+# Vérification de la connectivité
+echo -e "${YELLOW}[1/4] Vérification de la connectivité vers Splunk...${NC}"
+if ! curl -s --connect-timeout 5 "http://${SPLUNK_HOST}:${SPLUNK_PORT}" > /dev/null; then
+    echo -e "${RED}❌ Erreur : Impossible de se connecter à Splunk sur ${SPLUNK_HOST}:${SPLUNK_PORT}${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ Connexion à Splunk OK${NC}\n"
+
+# Création du contenu XML du dashboard
+echo -e "${YELLOW}[2/4] Génération du dashboard incomplet...${NC}"
+
+DASHBOARD_XML='<form version="1.1">
+  <label>'"${DASHBOARD_TITLE}"'</label>
+  <description>⚠️ Ce dashboard semble fonctionnel mais manque d'\''informations CRITIQUES - Exercice : Identifiez ce qui est absent</description>
+  
+  <fieldset submitButton="false">
+    <input type="time" token="time_token">
+      <label>Période</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+
+  <row>
+    <panel>
+      <html>
+        <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px;">
+          <h2>🔍 Exercice : Identification des Manques</h2>
+          <p><strong>Ce dashboard présente les activités du réseau, mais il manque des informations CRITIQUES pour la sécurité.</strong></p>
+          <br/>
+          <p><strong>Votre mission :</strong></p>
+          <ol>
+            <li>Examiner chaque panel du dashboard</li>
+            <li>Identifier ce qui manque (événements, filtres, alertes, corrélations)</li>
+            <li>Expliquer pourquoi c'\''est critique</li>
+            <li>Proposer des ajouts pour compléter le dashboard</li>
+          </ol>
+          <br/>
+          <p><strong>Indices :</strong> Pensez aux 5W : Who, What, When, Where, Why</p>
+        </div>
+      </html>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>📊 Nombre total d'\''événements de sécurité</title>
+      <single>
+        <search>
+          <query>index=windows source="WinEventLog:Security" earliest=$time_token.earliest$ latest=$time_token.latest$
+| stats count as total</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="underLabel">Événements Windows Security</option>
+      </single>
+    </panel>
+    
+    <panel>
+      <title>✅ Connexions réussies</title>
+      <single>
+        <search>
+          <query>index=windows source="WinEventLog:Security" EventCode=4624 earliest=$time_token.earliest$ latest=$time_token.latest$
+| stats count as logins</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="underLabel">Authentifications Windows</option>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>👥 Top 5 utilisateurs actifs</title>
+      <table>
+        <search>
+          <query>index=windows source="WinEventLog:Security" EventCode=4624 earliest=$time_token.earliest$ latest=$time_token.latest$
+| rex field=_raw "Account Name:\s+(?&lt;user&gt;\S+)"
+| stats count by user
+| sort -count
+| head 5</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+    
+    <panel>
+      <title>💻 Serveurs actifs</title>
+      <table>
+        <search>
+          <query>index=linux OR index=windows earliest=$time_token.earliest$ latest=$time_token.latest$
+| stats count by host
+| sort -count</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>📈 Timeline des authentifications</title>
+      <chart>
+        <search>
+          <query>index=windows source="WinEventLog:Security" EventCode=4624 earliest=$time_token.earliest$ latest=$time_token.latest$
+| timechart span=1h count</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.axisTitleY.text">Connexions</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>🔐 Activité SSH Linux</title>
+      <table>
+        <search>
+          <query>index=linux source="/var/log/auth.log" "Accepted password" earliest=$time_token.earliest$ latest=$time_token.latest$
+| rex field=_raw "for (?&lt;user&gt;\S+) from (?&lt;src_ip&gt;[\d\.]+)"
+| stats count by user, src_ip
+| sort -count
+| head 10</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>🌐 Trafic réseau par port</title>
+      <chart>
+        <search>
+          <query>index=* sourcetype=pf:filterlog earliest=$time_token.earliest$ latest=$time_token.latest$
+| rex field=_raw ",(?&lt;dst_port&gt;\d+),[^,]*$"
+| stats count by dst_port
+| sort -count
+| head 10</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="charting.chart">bar</option>
+        <option name="charting.axisTitleX.text">Nombre de connexions</option>
+      </chart>
+    </panel>
+    
+    <panel>
+      <title>📧 Activité du serveur mail</title>
+      <single>
+        <search>
+          <query>index=linux source="/var/log/mail.log" earliest=$time_token.earliest$ latest=$time_token.latest$
+| stats count as emails</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="underLabel">Emails traités</option>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>🖥️ Événements système Windows</title>
+      <table>
+        <search>
+          <query>index=windows source="WinEventLog:System" earliest=$time_token.earliest$ latest=$time_token.latest$
+| stats count by EventCode
+| sort -count
+| head 10</query>
+          <earliest>$time_token.earliest$</earliest>
+          <latest>$time_token.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <html>
+        <div style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin: 10px;">
+          <h3>✅ Dashboard opérationnel</h3>
+          <p>Toutes les requêtes fonctionnent correctement et affichent des données.</p>
+          <p><strong>Mais êtes-vous vraiment en sécurité ?</strong></p>
+          <br/>
+          <p>Réfléchissez aux questions suivantes :</p>
+          <ul>
+            <li>Que se passe-t-il si quelqu'\''un essaie de se connecter sans succès ?</li>
+            <li>Comment détectez-vous une compromission ?</li>
+            <li>Où sont les alertes pour les activités anormales ?</li>
+            <li>Surveillez-vous les changements de configuration ?</li>
+            <li>Pouvez-vous identifier une escalade de privilèges ?</li>
+            <li>Que se passe-t-il après les heures de bureau ?</li>
+          </ul>
+        </div>
+      </html>
+    </panel>
+  </row>
+</form>'
+
+echo -e "${GREEN}✅ Dashboard incomplet généré${NC}\n"
+
+# Suppression de l'ancien dashboard s'il existe
+echo -e "${YELLOW}[3/4] Suppression de l'ancien dashboard (si existant)...${NC}"
+curl -k -s -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+  -X DELETE \
+  "https://${SPLUNK_HOST}:8089/servicesNS/admin/search/data/ui/views/${DASHBOARD_ID}" \
+  2>/dev/null
+
+echo -e "${GREEN}✅ Nettoyage effectué${NC}\n"
+
+# Création du nouveau dashboard
+echo -e "${YELLOW}[4/4] Déploiement du dashboard...${NC}"
+
+RESPONSE=$(curl -k -s -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+  -X POST \
+  "https://${SPLUNK_HOST}:8089/servicesNS/admin/search/data/ui/views" \
+  --data-urlencode "name=${DASHBOARD_ID}" \
+  --data-urlencode "eai:data=${DASHBOARD_XML}" \
+  -w "\nHTTP_CODE:%{http_code}")
+
+HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d':' -f2)
+
+if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+    echo -e "${GREEN}✅ Dashboard déployé avec succès !${NC}\n"
+    echo -e "${YELLOW}======================================${NC}"
+    echo -e "${YELLOW}Dashboard accessible à :${NC}"
+    echo -e "${YELLOW}http://${SPLUNK_HOST}:${SPLUNK_PORT}/app/search/${DASHBOARD_ID}${NC}"
+    echo -e "${YELLOW}======================================${NC}\n"
+    
+    # Définir les permissions
+    curl -k -s -u "${SPLUNK_USER}:${SPLUNK_PASSWORD}" \
+      -X POST \
+      "https://${SPLUNK_HOST}:8089/servicesNS/admin/search/data/ui/views/${DASHBOARD_ID}/acl" \
+      -d "sharing=app" \
+      -d "owner=admin" \
+      -d "perms.read=*" \
+      > /dev/null
+    
+    echo -e "${GREEN}✅ Permissions configurées${NC}\n"
+    
+else
+    echo -e "${RED}❌ Erreur lors du déploiement du dashboard${NC}"
+    echo -e "${RED}Code HTTP: ${HTTP_CODE}${NC}"
+    echo "$RESPONSE" | grep -v "HTTP_CODE:"
+    exit 1
+fi
+
+echo -e "${RED}======================================${NC}"
+echo -e "${RED}⚠️ INFORMATIONS MANQUANTES${NC}"
+echo -e "${RED}======================================${NC}"
+echo -e "❌ Échecs d'authentification (EventCode 4625)"
+echo -e "❌ Escalade de privilèges (EventCode 4672, 4728, 4732)"
+echo -e "❌ Changements de comptes (création, suppression, modification)"
+echo -e "❌ Trafic bloqué par le firewall (action=block)"
+echo -e "❌ Détection de port scanning"
+echo -e "❌ Connexions depuis des IPs inhabituelles"
+echo -e "❌ Activité en dehors des heures de bureau"
+echo -e "❌ Événements critiques Linux (erreurs, panics)"
+echo -e "❌ Modifications de fichiers sensibles"
+echo -e "❌ Utilisation de commandes privilégiées (sudo)"
+echo -e "❌ Alertes et seuils de sécurité"
+echo -e "❌ Corrélation entre événements suspects"
+echo -e ""
+echo -e "${YELLOW}Votre mission : Identifier TOUS les manques !${NC}\n"

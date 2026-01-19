@@ -1,113 +1,14 @@
-root@mail:/home/user# cd /tmp/nginx-1.4.0 && ./configure --prefix=/opt/nginx-vuln --with-http_ssl_module
-checking for OS
- + Linux 6.11.0-26-generic x86_64
-checking for C compiler ... found
- + using GNU C compiler
- + gcc version: 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04) 
-checking for gcc -pipe switch ... found
-checking for gcc builtin atomic operations ... found
-checking for C99 variadic macros ... found
-checking for gcc variadic macros ... found
-checking for unistd.h ... found
-checking for inttypes.h ... found
-checking for limits.h ... found
-checking for sys/filio.h ... not found
-checking for sys/param.h ... found
-checking for sys/mount.h ... found
-checking for sys/statvfs.h ... found
-checking for crypt.h ... found
-checking for Linux specific features
-checking for epoll ... found
-checking for sendfile() ... found
-checking for sendfile64() ... found
-checking for sys/prctl.h ... found
-checking for prctl(PR_SET_DUMPABLE) ... found
-checking for sched_setaffinity() ... found
-checking for crypt_r() ... found
-checking for sys/vfs.h ... found
-checking for nobody group ... not found
-checking for nogroup group ... found
-checking for poll() ... found
-checking for /dev/poll ... not found
-checking for kqueue ... not found
-checking for crypt() ... not found
-checking for crypt() in libcrypt ... found
-checking for F_READAHEAD ... not found
-checking for posix_fadvise() ... found
-checking for O_DIRECT ... found
-checking for F_NOCACHE ... not found
-checking for directio() ... not found
-checking for statfs() ... found
-checking for statvfs() ... found
-checking for dlopen() ... found
-checking for sched_yield() ... found
-checking for SO_SETFIB ... not found
-checking for SO_ACCEPTFILTER ... not found
-checking for TCP_DEFER_ACCEPT ... found
-checking for TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT ... found
-checking for TCP_INFO ... found
-checking for accept4() ... found
-checking for int size ... 4 bytes
-checking for long size ... 8 bytes
-checking for long long size ... 8 bytes
-checking for void * size ... 8 bytes
-checking for uint64_t ... found
-checking for sig_atomic_t ... found
-checking for sig_atomic_t size ... 4 bytes
-checking for socklen_t ... found
-checking for in_addr_t ... found
-checking for in_port_t ... found
-checking for rlim_t ... found
-checking for uintptr_t ... uintptr_t found
-checking for system byte ordering ... little endian
-checking for size_t size ... 8 bytes
-checking for off_t size ... 8 bytes
-checking for time_t size ... 8 bytes
-checking for setproctitle() ... not found
-checking for pread() ... found
-checking for pwrite() ... found
-checking for sys_nerr ... not found
-checking for _sys_nerr ... not found
-checking for maximum errno ... found
-checking for localtime_r() ... found
-checking for posix_memalign() ... found
-checking for memalign() ... found
-checking for mmap(MAP_ANON|MAP_SHARED) ... found
-checking for mmap("/dev/zero", MAP_SHARED) ... found
-checking for System V shared memory ... found
-checking for POSIX semaphores ... found
-checking for struct msghdr.msg_control ... found
-checking for ioctl(FIONBIO) ... found
-checking for struct tm.tm_gmtoff ... found
-checking for struct dirent.d_namlen ... not found
-checking for struct dirent.d_type ... found
-checking for sysconf(_SC_NPROCESSORS_ONLN) ... found
-checking for openat(), fstatat() ... found
-checking for getaddrinfo() ... found
-checking for PCRE library ... found
-checking for PCRE JIT support ... found
-checking for OpenSSL library ... found
-checking for zlib library ... found
-creating objs/Makefile
-
-Configuration summary
-  + using system PCRE library
-  + using system OpenSSL library
-  + md5: using OpenSSL library
-  + sha1: using OpenSSL library
-  + using system zlib library
-
-  nginx path prefix: "/opt/nginx-vuln"
-  nginx binary file: "/opt/nginx-vuln/sbin/nginx"
-  nginx configuration prefix: "/opt/nginx-vuln/conf"
-  nginx configuration file: "/opt/nginx-vuln/conf/nginx.conf"
-  nginx pid file: "/opt/nginx-vuln/logs/nginx.pid"
-  nginx error log file: "/opt/nginx-vuln/logs/error.log"
-  nginx http access log file: "/opt/nginx-vuln/logs/access.log"
-  nginx http client request body temporary files: "client_body_temp"
-  nginx http proxy temporary files: "proxy_temp"
-  nginx http fastcgi temporary files: "fastcgi_temp"
-  nginx http uwsgi temporary files: "uwsgi_temp"
-  nginx http scgi temporary files: "scgi_temp"
-
-root@mail:/tmp/nginx-1.4.0# 
+make -f objs/Makefile
+make[1] : on entre dans le répertoire « /tmp/nginx-1.4.0 »
+cc -c -pipe  -O -W -Wall -Wpointer-arith -Wno-unused -Werror -g  -I src/core -I src/event -I src/event/modules -I src/os/unix -I objs \
+	-o objs/src/core/nginx.o \
+	src/core/nginx.c
+In file included from src/core/ngx_config.h:26,
+                 from src/core/nginx.c:8:
+src/os/unix/ngx_linux_config.h:54:10: fatal error: sys/sysctl.h: Aucun fichier ou dossier de ce nom
+   54 | #include <sys/sysctl.h>
+      |          ^~~~~~~~~~~~~~
+compilation terminated.
+make[1]: *** [objs/Makefile:339 : objs/src/core/nginx.o] Erreur 1
+make[1] : on quitte le répertoire « /tmp/nginx-1.4.0 »
+make: *** [Makefile:8 : build] Erreur 2

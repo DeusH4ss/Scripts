@@ -20,10 +20,10 @@ cd "$WORKDIR"
 
 echo "[2/5] Génération du Dockerfile..."
 cat > Dockerfile << 'DOCKERFILE_END'
-FROM php:7.0-apache
+FROM php:7.2-apache
 
 RUN apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*
-RUN docker-php-ext-install mysqli
+RUN docker-php-ext-install mysqli pdo pdo_mysql
 
 WORKDIR /var/www/html
 RUN wget -q https://files.phpmyadmin.net/phpMyAdmin/4.6.2/phpMyAdmin-4.6.2-all-languages.zip \

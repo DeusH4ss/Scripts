@@ -1,8 +1,10 @@
 #!/bin/bash
 
-# Script de diagnostic, sauvegarde et réinstallation MySQL - Iron4Software Lab
+# Script de diagnostic, sauvegarde et réinstallation MariaDB - Iron4Software Lab
 # Auteur: Philippe - Projet Iron4Software
 # Date: 2026-01-21
+# Description: Sauvegarde, désinstallation et réinstallation propre de MariaDB
+#              avec configuration automatique de Roundcube
 
 set -e
 
@@ -17,7 +19,7 @@ LOG_FILE="/tmp/mysql_fix.log"
 
 echo -e "${BLUE}"
 echo "=========================================================="
-echo "   MySQL Backup & Reinstall - Iron4Software Lab"
+echo "   MariaDB Backup & Reinstall - Iron4Software Lab"
 echo "=========================================================="
 echo -e "${NC}"
 
@@ -136,10 +138,10 @@ echo -e "\n${BLUE}=== PHASE 4: RÉINSTALLATION MYSQL ===${NC}"
 log_info "Mise à jour de la liste des paquets..."
 apt update
 
-log_info "Installation de MySQL Server..."
-DEBIAN_FRONTEND=noninteractive apt install -y mysql-server
+log_info "Installation de MariaDB Server..."
+DEBIAN_FRONTEND=noninteractive apt install -y mariadb-server mariadb-client
 
-log_info "✓ MySQL installé"
+log_info "✓ MariaDB installé"
 
 # 5. CONFIGURATION INITIALE
 echo -e "\n${BLUE}=== PHASE 5: CONFIGURATION MYSQL ===${NC}"
@@ -157,6 +159,7 @@ if systemctl is-active --quiet mysql; then
     # Permettre la connexion root sans mot de passe depuis localhost (pour faciliter le lab)
     mysql <<EOF
 ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';
+FLUSH PRIVILEGES;
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
 DROP DATABASE IF EXISTS test;
@@ -207,22 +210,73 @@ GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost' IDENTIFIED BY
 FLUSH PRIVILEGES;
 EOF
 
+log_info "✓ Base de données Roundcube créée"
+log_info "Utilisateur: roundcube / Password: roundcube_pass"
+
 log_info "Import du schéma Roundcube..."
 if [ -f /var/www/html/webmail/SQL/mysql.initial.sql ]; then
-    mysql roundcubemail < /var/www/html/webmail/SQL/mysql.initial.sql
-    log_info "✓ Schéma Roundcube importé"
+    log_info "Fichier SQL trouvé, import en cours..."
+    
+    # Vérifier si les tables existent déjà
+    TABLE_COUNT=$(mysql -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='roundcubemail';" 2>/dev/null || echo "0")
+    
+    if [ "$TABLE_COUNT" -gt "0" ]; then
+        log_warn "Tables déjà présentes ($TABLE_COUNT tables) - Suppression et réimport..."
+        mysql -e "DROP DATABASE roundcubemail;"
+        mysql -e "CREATE DATABASE roundcubemail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+        mysql -e "GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost';"
+    fi
+    
+    # Import du schéma
+    if mysql roundcubemail < /var/www/html/webmail/SQL/mysql.initial.sql 2>/tmp/roundcube_import.log; then
+        log_info "✓ Schéma Roundcube importé avec succès"
+        
+        # Vérifier les tables créées
+        log_info "Tables Roundcube créées:"
+        mysql -e "USE roundcubemail; SHOW TABLES;" | head -15
+    else
+        log_error "Échec import schéma Roundcube"
+        cat /tmp/roundcube_import.log
+        exit 1
+    fi
 else
-    log_warn "Schéma Roundcube non trouvé"
+    log_error "Schéma Roundcube non trouvé à /var/www/html/webmail/SQL/mysql.initial.sql"
+    log_info "Vérification du webmail..."
+    ls -la /var/www/html/webmail/SQL/ 2>/dev/null || log_error "Répertoire SQL non trouvé"
+    exit 1
 fi
 
 log_info "Vérification de la configuration Roundcube..."
 if [ -f /var/www/html/webmail/config/config.inc.php ]; then
-    if ! grep -q "mysql://roundcube:roundcube_pass@localhost/roundcubemail" /var/www/html/webmail/config/config.inc.php; then
-        log_info "Mise à jour de la configuration Roundcube..."
-        cp /var/www/html/webmail/config/config.inc.php /var/www/html/webmail/config/config.inc.php.bak
+    # Sauvegarde de la config originale
+    cp /var/www/html/webmail/config/config.inc.php /var/www/html/webmail/config/config.inc.php.bak.$(date +%Y%m%d_%H%M%S)
+    
+    # Vérifier si la ligne db_dsnw existe et la corriger
+    if grep -q "db_dsnw" /var/www/html/webmail/config/config.inc.php; then
+        log_info "Mise à jour de la configuration db_dsnw..."
         sed -i "s|\$config\['db_dsnw'\].*|\$config['db_dsnw'] = 'mysql://roundcube:roundcube_pass@localhost/roundcubemail';|" /var/www/html/webmail/config/config.inc.php
+    else
+        log_warn "Ligne db_dsnw non trouvée, ajout au fichier..."
+        echo "\$config['db_dsnw'] = 'mysql://roundcube:roundcube_pass@localhost/roundcubemail';" >> /var/www/html/webmail/config/config.inc.php
     fi
-    log_info "✓ Configuration Roundcube OK"
+    
+    # Vérifier les autres paramètres essentiels
+    if ! grep -q "default_host" /var/www/html/webmail/config/config.inc.php; then
+        log_info "Ajout de la configuration IMAP/SMTP..."
+        cat >> /var/www/html/webmail/config/config.inc.php <<EOF
+
+// Configuration IMAP/SMTP
+\$config['default_host'] = 'localhost';
+\$config['smtp_server'] = 'localhost';
+\$config['smtp_port'] = 25;
+EOF
+    fi
+    
+    log_info "✓ Configuration Roundcube mise à jour"
+    log_info "DB DSN: mysql://roundcube:roundcube_pass@localhost/roundcubemail"
+else
+    log_error "Fichier config.inc.php non trouvé !"
+    exit 1
 fi
 
 # 8. EXTRACTION CREDENTIALS DOCKER
@@ -283,7 +337,24 @@ else
 fi
 
 log_info "Test du webmail..."
-curl -I http://localhost/webmail/ 2>/dev/null | head -3
+WEBMAIL_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/webmail/ 2>/dev/null)
+
+if [ "$WEBMAIL_RESPONSE" = "200" ]; then
+    log_info "✓ Webmail accessible (HTTP $WEBMAIL_RESPONSE)"
+    
+    # Vérifier qu'il n'y a pas d'erreur interne
+    WEBMAIL_CONTENT=$(curl -s http://localhost/webmail/ | grep -i "oops\|error\|wrong")
+    if [ -z "$WEBMAIL_CONTENT" ]; then
+        log_info "✓ Webmail fonctionne correctement (pas d'erreur détectée)"
+    else
+        log_warn "Webmail répond mais contient des erreurs"
+        tail -20 /var/www/html/webmail/logs/errors
+    fi
+else
+    log_error "Webmail inaccessible (HTTP $WEBMAIL_RESPONSE)"
+    log_info "Vérification des logs Apache..."
+    tail -20 /var/log/apache2/error.log | grep -i roundcube
+fi
 
 log_info "Redémarrage d'Apache..."
 systemctl restart apache2
@@ -293,8 +364,16 @@ echo -e "\n${BLUE}=========================================================="
 echo "                  RAPPORT FINAL"
 echo "==========================================================${NC}"
 
+# Afficher la version MariaDB
+MARIADB_VERSION=$(mysql -V | grep -oP 'Distrib \K[0-9.]+')
+log_info "Version MariaDB installée: $MARIADB_VERSION"
+
+# Vérifier les bases de données
+log_info "Bases de données présentes:"
+mysql -e "SHOW DATABASES;" | grep -v "Database\|information_schema\|performance_schema\|mysql\|sys"
+
 echo -e "\n${BLUE}Status des services:${NC}"
-systemctl is-active mysql && echo -e "  ${GREEN}✓ MySQL Local: ACTIF${NC}" || echo -e "  ${RED}✗ MySQL Local: INACTIF${NC}"
+systemctl is-active mysql && echo -e "  ${GREEN}✓ MariaDB: ACTIF${NC}" || echo -e "  ${RED}✗ MariaDB: INACTIF${NC}"
 systemctl is-active apache2 && echo -e "  ${GREEN}✓ Apache2: ACTIF${NC}" || echo -e "  ${RED}✗ Apache2: INACTIF${NC}"
 docker ps | grep -q phpmyadmin && echo -e "  ${GREEN}✓ phpMyAdmin Docker: ACTIF${NC}" || echo -e "  ${RED}✗ phpMyAdmin Docker: INACTIF${NC}"
 
@@ -321,6 +400,6 @@ echo "  • /tmp/phpmyadmin_creds.txt - Credentials exploitation"
 echo "  • $LOG_FILE - Logs du script"
 
 echo -e "\n${BLUE}==========================================================${NC}"
-echo -e "${GREEN}  MySQL réinstallé avec succès - Lab prêt pour l'attaque !${NC}"
+echo -e "${GREEN}  MariaDB réinstallé avec succès - Lab prêt pour l'attaque !${NC}"
 echo -e "${BLUE}  MITRE ATT&CK: T1190 - Exploit Public-Facing Application${NC}"
 echo -e "${BLUE}==========================================================${NC}"

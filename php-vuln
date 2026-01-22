@@ -1,8 +1,7 @@
 #!/bin/bash
 #
-# Script d'installation GLPI 9.4.5 (vulnérable CVE-2020-11060)
+# Script d'installation GLPI 9.4.5 (vulnérable CVE-2020-11060) - CORRIGÉ
 # Pour lab Iron4Software - Serveur mail 192.168.1.250
-# Isolation complète de la BDD Roundcube
 #
 
 set -e
@@ -30,112 +29,122 @@ MYSQL_ROOT_PASS=""
 read -sp "Mot de passe MySQL root : " MYSQL_ROOT_PASS
 echo
 
-echo -e "\n${YELLOW}[1/8] Vérification des prérequis...${NC}"
-# Vérifier si Apache et MySQL sont installés
-if ! command -v apache2 &> /dev/null; then
-    echo -e "${RED}Apache2 n'est pas installé${NC}"
-    exit 1
-fi
-
-if ! command -v mysql &> /dev/null; then
-    echo -e "${RED}MySQL n'est pas installé${NC}"
-    exit 1
-fi
-
-echo -e "${YELLOW}[2/8] Installation des dépendances PHP...${NC}"
+echo -e "\n${YELLOW}[1/9] Nettoyage des dépendances cassées...${NC}"
+apt --fix-broken install -y
+apt-get clean
 apt-get update
+
+echo -e "\n${YELLOW}[2/9] Installation des dépendances PHP essentielles...${NC}"
+# Installer les paquets de base d'abord
 apt-get install -y \
-    php php-mysql php-mbstring php-curl php-gd php-xml \
-    php-ldap php-imap php-apcu php-xmlrpc php-cas \
-    php-zip php-bz2 php-intl php-json
+    php8.3 \
+    php8.3-mysql \
+    php8.3-mbstring \
+    php8.3-curl \
+    php8.3-gd \
+    php8.3-xml \
+    php8.3-zip \
+    php8.3-intl \
+    libapache2-mod-php8.3
+
+echo -e "\n${YELLOW}[3/9] Installation des extensions PHP optionnelles...${NC}"
+# Installer ce qui est disponible, ignorer les erreurs
+apt-get install -y php8.3-ldap 2>/dev/null || echo -e "${YELLOW}php8.3-ldap non disponible, ignoré${NC}"
+apt-get install -y php8.3-imap 2>/dev/null || echo -e "${YELLOW}php8.3-imap non disponible, ignoré${NC}"
+apt-get install -y php8.3-bz2 2>/dev/null || echo -e "${YELLOW}php8.3-bz2 non disponible, ignoré${NC}"
+
+# APCu - peut ne pas être disponible sur toutes les versions
+apt-get install -y php8.3-apcu 2>/dev/null || echo -e "${YELLOW}APCu non disponible, GLPI fonctionnera sans cache${NC}"
+
+# CAS et XMLRPC - souvent non disponibles avec PHP 8.3
+echo -e "${YELLOW}Note: php-cas et php-xmlrpc ne sont pas requis pour GLPI 9.4.5${NC}"
 
 # Vérifier la version PHP
-PHP_VERSION=$(php -r 'echo PHP_VERSION;' | cut -d'.' -f1,2)
-echo -e "${GREEN}Version PHP détectée : ${PHP_VERSION}${NC}"
+PHP_VERSION=$(php -r 'echo PHP_VERSION;')
+echo -e "${GREEN}Version PHP installée : ${PHP_VERSION}${NC}"
 
-echo -e "\n${YELLOW}[3/8] Création de la base de données GLPI (isolée)...${NC}"
+echo -e "\n${YELLOW}[4/9] Vérification des services...${NC}"
+systemctl status apache2 --no-pager || systemctl start apache2
+systemctl status mysql --no-pager || systemctl start mysql
+
+echo -e "\n${YELLOW}[5/9] Création de la base de données GLPI (isolée)...${NC}"
 mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF
 -- Créer la base de données GLPI
 CREATE DATABASE IF NOT EXISTS ${GLPI_DB} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- Supprimer l'utilisateur s'il existe déjà
+DROP USER IF EXISTS '${GLPI_USER}'@'localhost';
+
 -- Créer l'utilisateur dédié
-CREATE USER IF NOT EXISTS '${GLPI_USER}'@'localhost' IDENTIFIED BY '${GLPI_PASS}';
+CREATE USER '${GLPI_USER}'@'localhost' IDENTIFIED BY '${GLPI_PASS}';
 
 -- Donner tous les privilèges sur la BDD GLPI uniquement
 GRANT ALL PRIVILEGES ON ${GLPI_DB}.* TO '${GLPI_USER}'@'localhost';
 FLUSH PRIVILEGES;
-
--- Vérifier l'isolation
-SELECT user, host FROM mysql.user WHERE user IN ('${GLPI_USER}', 'roundcube');
-SHOW DATABASES;
 EOF
 
-echo -e "${GREEN}✓ Base de données ${GLPI_DB} créée et isolée${NC}"
+echo -e "${GREEN}✓ Base de données ${GLPI_DB} créée${NC}"
 
-echo -e "\n${YELLOW}[4/8] Téléchargement de GLPI ${GLPI_VERSION}...${NC}"
+# Vérifier l'isolation
+echo -e "\n${YELLOW}Vérification de l'isolation des bases de données :${NC}"
+mysql -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT user, host, Db FROM mysql.db WHERE Db IN ('${GLPI_DB}', 'roundcubemail');"
+
+echo -e "\n${YELLOW}[6/9] Téléchargement de GLPI ${GLPI_VERSION}...${NC}"
 cd /tmp
-wget -q --show-progress ${GLPI_URL}
+# Supprimer les anciens fichiers
+rm -f glpi-${GLPI_VERSION}.tgz
+wget ${GLPI_URL}
 
-echo -e "\n${YELLOW}[5/8] Extraction et installation...${NC}"
+echo -e "\n${YELLOW}[7/9] Extraction et installation...${NC}"
 tar -xzf glpi-${GLPI_VERSION}.tgz
-rm -rf ${GLPI_DIR}
+# Backup de l'ancien si existe
+if [ -d "${GLPI_DIR}" ]; then
+    mv ${GLPI_DIR} ${GLPI_DIR}.backup.$(date +%Y%m%d_%H%M%S)
+fi
 mv glpi ${GLPI_DIR}
 
-echo -e "\n${YELLOW}[6/8] Configuration des permissions...${NC}"
+echo -e "\n${YELLOW}[8/9] Configuration des permissions...${NC}"
 chown -R www-data:www-data ${GLPI_DIR}
-chmod -R 755 ${GLPI_DIR}
+find ${GLPI_DIR} -type d -exec chmod 755 {} \;
+find ${GLPI_DIR} -type f -exec chmod 644 {} \;
 
 # Permissions spécifiques pour les répertoires critiques
 chmod -R 775 ${GLPI_DIR}/files
 chmod -R 775 ${GLPI_DIR}/config
 
-echo -e "\n${YELLOW}[7/8] Configuration Apache...${NC}"
-cat > /etc/apache2/sites-available/glpi.conf <<EOF
+echo -e "\n${YELLOW}[9/9] Configuration Apache...${NC}"
+cat > /etc/apache2/sites-available/glpi.conf <<'APACHECONF'
 # Configuration GLPI pour lab Iron4Software
-Alias /glpi ${GLPI_DIR}
+Alias /glpi /var/www/html/glpi
 
-<Directory ${GLPI_DIR}>
+<Directory /var/www/html/glpi>
     Options -Indexes +FollowSymLinks
     AllowOverride All
     Require all granted
 
-    # PHP Settings pour GLPI
-    php_value max_execution_time 600
-    php_value memory_limit 256M
-    php_value post_max_size 50M
-    php_value upload_max_filesize 50M
+    <IfModule mod_php8.c>
+        php_value max_execution_time 600
+        php_value memory_limit 256M
+        php_value post_max_size 50M
+        php_value upload_max_filesize 50M
+    </IfModule>
 </Directory>
 
 # Répertoire des fichiers GLPI (vulnérable pour pentest)
-<Directory ${GLPI_DIR}/files>
+<Directory /var/www/html/glpi/files>
     Options +Indexes
     AllowOverride None
     Require all granted
 </Directory>
-EOF
+APACHECONF
 
-# Activer le site et modules Apache
+# Désactiver le site par défaut si nécessaire et activer GLPI
 a2ensite glpi.conf
 a2enmod rewrite
-systemctl reload apache2
+a2enmod php8.3
+systemctl restart apache2
 
-echo -e "${GREEN}✓ Configuration Apache créée : /glpi${NC}"
-
-echo -e "\n${YELLOW}[8/8] Création du fichier de configuration BDD...${NC}"
-# Créer le fichier de config pour automatiser l'installation
-mkdir -p ${GLPI_DIR}/config
-cat > ${GLPI_DIR}/config/config_db.php <<EOF
-<?php
-class DB extends DBmysql {
-   public \$dbhost = 'localhost';
-   public \$dbuser = '${GLPI_USER}';
-   public \$dbpassword = '${GLPI_PASS}';
-   public \$dbdefault = '${GLPI_DB}';
-}
-EOF
-
-chown www-data:www-data ${GLPI_DIR}/config/config_db.php
-chmod 640 ${GLPI_DIR}/config/config_db.php
+echo -e "${GREEN}✓ Configuration Apache créée${NC}"
 
 # Récupérer l'IP du serveur
 SERVER_IP=$(hostname -I | awk '{print $1}')
@@ -144,24 +153,27 @@ echo -e "\n${GREEN}================================================${NC}"
 echo -e "${GREEN}Installation GLPI 9.4.5 terminée !${NC}"
 echo -e "${GREEN}================================================${NC}"
 echo -e "\n${YELLOW}Informations importantes :${NC}"
-echo -e "URL d'accès      : http://${SERVER_IP}/glpi"
+echo -e "URL d'accès      : ${GREEN}http://${SERVER_IP}/glpi${NC}"
 echo -e "Base de données  : ${GLPI_DB}"
 echo -e "Utilisateur BDD  : ${GLPI_USER}"
 echo -e "Mot de passe BDD : ${GLPI_PASS}"
-echo -e "\n${YELLOW}Credentials GLPI par défaut :${NC}"
-echo -e "Compte admin     : glpi / glpi"
-echo -e "Compte tech      : tech / tech"
-echo -e "Compte normal    : normal / normal"
-echo -e "Compte post-only : post-only / postonly"
-echo -e "\n${RED}⚠️  VULNÉRABILITÉ CVE-2020-11060${NC}"
-echo -e "${RED}Cette version est volontairement vulnérable pour le pentest${NC}"
-echo -e "${RED}Exploitation possible avec compte 'tech'${NC}"
 echo -e "\n${YELLOW}Étapes suivantes :${NC}"
-echo -e "1. Accéder à http://${SERVER_IP}/glpi"
-echo -e "2. Suivre l'assistant d'installation (ou auto-configuré)"
-echo -e "3. Se connecter avec tech/tech"
-echo -e "4. Exploiter avec : ${GREEN}CVE-2020-11060${NC}"
-echo -e "\n${YELLOW}Vérification isolation BDD :${NC}"
+echo -e "1. Accéder à ${GREEN}http://${SERVER_IP}/glpi${NC}"
+echo -e "2. Suivre l'assistant d'installation :"
+echo -e "   - Langue : Français"
+echo -e "   - Licence : Accepter"
+echo -e "   - Installation : Installer"
+echo -e "   - Serveur SQL : localhost"
+echo -e "   - Utilisateur : ${GLPI_USER}"
+echo -e "   - Mot de passe : ${GLPI_PASS}"
+echo -e "   - Base : ${GLPI_DB}"
+echo -e "3. Après installation, se connecter avec :"
+echo -e "   ${GREEN}tech / tech${NC} (pour exploitation)"
+echo -e "\n${RED}⚠️  VULNÉRABILITÉ CVE-2020-11060${NC}"
+echo -e "${RED}Cette version est volontairement vulnérable${NC}"
+echo -e "\n${YELLOW}Vérification des bases de données :${NC}"
 mysql -u root -p"${MYSQL_ROOT_PASS}" -e "SHOW DATABASES;" | grep -E "(glpi|roundcube)"
 
-echo -e "\n${GREEN}Script terminé avec succès !${NC}"
+echo -e "\n${GREEN}Installation terminée avec succès !${NC}"
+echo -e "${YELLOW}Suppression des fichiers temporaires...${NC}"
+rm -f /tmp/glpi-${GLPI_VERSION}.tgz

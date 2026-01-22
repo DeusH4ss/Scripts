@@ -1,0 +1,44 @@
+#!/bin/bash
+# fix_glpi_install.sh
+
+echo "=== Diagnostic GLPI Installation Error 500 ==="
+
+# Vérifier les logs
+echo -e "\n[1] Dernières erreurs Apache :"
+tail -20 /var/log/apache2/error.log
+
+# Vérifier les permissions
+echo -e "\n[2] Permissions du répertoire install :"
+ls -la /var/www/html/glpi/install/ | head -10
+
+# Corriger les permissions
+echo -e "\n[3] Correction des permissions..."
+chown -R www-data:www-data /var/www/html/glpi
+chmod -R 755 /var/www/html/glpi
+chmod -R 775 /var/www/html/glpi/config
+chmod -R 775 /var/www/html/glpi/files
+
+# Vérifier la configuration PHP
+echo -e "\n[4] Vérification PHP :"
+php -v
+php -m | grep -E "mysql|mysqli|pdo"
+
+# Vérifier que MySQL est accessible
+echo -e "\n[5] Test connexion MySQL :"
+mysql -u glpi_user -pGlpiPass2024! glpi_db -e "SELECT 1;" 2>&1
+
+# Créer un fichier de test PHP
+echo -e "\n[6] Création d'un test PHP..."
+cat > /var/www/html/glpi/test.php <<'EOF'
+<?php
+phpinfo();
+?>
+EOF
+
+echo -e "\n[7] Redémarrage Apache..."
+systemctl restart apache2
+
+echo -e "\n=== Tests à effectuer ==="
+echo "1. Tester PHP : http://192.168.1.250/glpi/test.php"
+echo "2. Réessayer l'installation : http://192.168.1.250/glpi/install/install.php"
+echo "3. Vérifier les erreurs : tail -f /var/log/apache2/error.log"

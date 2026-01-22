@@ -1,0 +1,33 @@
+#!/bin/bash
+# fix_apparmor_for_pentest.sh
+# Désactiver AppArmor pour exploitation lab
+
+echo "=== Fix AppArmor pour lab pentest ==="
+
+# Installer les outils
+apt-get install -y apparmor-utils
+
+# Option 1 : Mode complain pour PHP
+echo "[1] Mise en mode complain de PHP..."
+aa-complain /usr/sbin/php-fpm8.3 2>/dev/null || echo "Profil PHP-FPM non trouvé"
+aa-complain /etc/apparmor.d/*php* 2>/dev/null || echo "Autres profils PHP non trouvés"
+
+# Option 2 : Désactiver les restrictions namespaces
+echo "[2] Désactivation des restrictions user namespaces..."
+sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0
+sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+# Option 3 : Désactiver complètement (pour lab uniquement)
+echo "[3] Désactivation complète d'AppArmor..."
+systemctl stop apparmor
+systemctl disable apparmor
+
+# Redémarrer Apache
+systemctl restart apache2
+
+echo ""
+echo "=== Status AppArmor ==="
+aa-status 2>/dev/null || echo "AppArmor désactivé"
+
+echo ""
+echo "=== Reverse shells devraient maintenant fonctionner ! ==="

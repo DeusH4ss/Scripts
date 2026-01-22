@@ -1,0 +1,66 @@
+#!/bin/bash
+# install_php74_glpi.sh
+
+echo "=== Installation PHP 7.4 pour GLPI 9.4.5 ==="
+
+# Ajouter le repository PHP
+apt-get update
+apt-get install -y software-properties-common
+add-apt-repository ppa:ondrej/php -y
+apt-get update
+
+# Installer PHP 7.4 et ses modules
+echo "[1/5] Installation de PHP 7.4..."
+apt-get install -y \
+    php7.4 \
+    php7.4-fpm \
+    php7.4-mysql \
+    php7.4-mbstring \
+    php7.4-curl \
+    php7.4-gd \
+    php7.4-xml \
+    php7.4-ldap \
+    php7.4-imap \
+    php7.4-zip \
+    php7.4-bz2 \
+    php7.4-intl \
+    libapache2-mod-php7.4
+
+echo "[2/5] Configuration Apache pour utiliser PHP 7.4..."
+# Désactiver PHP 8.3 et activer PHP 7.4
+a2dismod php8.3
+a2enmod php7.4
+
+# Ou configurer spécifiquement pour GLPI uniquement
+cat > /etc/apache2/conf-available/glpi-php74.conf <<'EOF'
+<FilesMatch "\.php$">
+    SetHandler "proxy:unix:/run/php/php7.4-fpm.sock|fcgi://localhost"
+</FilesMatch>
+EOF
+
+# Activer les modules nécessaires
+a2enmod proxy_fcgi setenvif
+a2enconf php7.4-fpm
+
+echo "[3/5] Configuration PHP 7.4 pour GLPI..."
+# Optimiser php.ini pour GLPI
+cat >> /etc/php/7.4/apache2/php.ini <<EOF
+
+; Configuration optimisée pour GLPI
+memory_limit = 256M
+upload_max_filesize = 50M
+post_max_size = 50M
+max_execution_time = 600
+session.cookie_httponly = On
+EOF
+
+echo "[4/5] Redémarrage des services..."
+systemctl restart php7.4-fpm
+systemctl restart apache2
+
+echo "[5/5] Vérification..."
+php -v
+
+echo "=== Installation terminée ==="
+echo "PHP 7.4 est maintenant actif pour Apache"
+echo "Tester : http://192.168.1.250/glpi/test.php"

@@ -1,0 +1,326 @@
+#!/bin/bash
+
+# Script de Vérification et Réparation Splunk
+# Vérifie les forwarders, indexes et configurations
+# Répare automatiquement si besoin
+# Lab Iron4Software - Auteur: Philippe
+
+SPLUNK_HOME="/opt/splunk"
+SPLUNK_USER="splunk"
+BACKUP_BASE="/tmp/splunk_license_backup_*"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+ERRORS=0
+WARNINGS=0
+
+echo -e "${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  Vérification et Réparation Splunk - Iron4Software  ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════════════════╝${NC}\n"
+
+# Vérification sudo
+if [ "$EUID" -ne 0 ]; then 
+   echo -e "${RED}[ERREUR] Exécute avec sudo: sudo bash $0${NC}"
+   exit 1
+fi
+
+# Fonction pour trouver le dernier backup
+find_latest_backup() {
+    LATEST_BACKUP=$(ls -td $BACKUP_BASE 2>/dev/null | head -1)
+    if [ -z "$LATEST_BACKUP" ]; then
+        echo -e "${YELLOW}⚠ Aucun backup trouvé${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}✓ Backup trouvé: $LATEST_BACKUP${NC}"
+    return 0
+}
+
+# ═══════════════════════════════════════════════════════
+# 1. VÉRIFICATION SPLUNK ACTIF
+# ═══════════════════════════════════════════════════════
+echo -e "${CYAN}═══ [1/7] Vérification Splunk ═══${NC}\n"
+
+if ! pgrep -f "splunkd" > /dev/null; then
+    echo -e "${RED}✗ Splunk n'est pas démarré${NC}"
+    echo -e "${YELLOW}→ Tentative de démarrage...${NC}"
+    sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk start --accept-license --answer-yes --no-prompt
+    sleep 5
+    if pgrep -f "splunkd" > /dev/null; then
+        echo -e "${GREEN}✓ Splunk démarré${NC}"
+    else
+        echo -e "${RED}✗ Échec du démarrage de Splunk${NC}"
+        ERRORS=$((ERRORS+1))
+        exit 1
+    fi
+else
+    echo -e "${GREEN}✓ Splunk actif (PID: $(pgrep -f splunkd))${NC}"
+fi
+
+# ═══════════════════════════════════════════════════════
+# 2. VÉRIFICATION CONFIGURATION OUTPUTS.CONF (FORWARDERS)
+# ═══════════════════════════════════════════════════════
+echo -e "\n${CYAN}═══ [2/7] Vérification outputs.conf ═══${NC}\n"
+
+OUTPUTS_CONF="$SPLUNK_HOME/etc/system/local/outputs.conf"
+
+if [ -f "$OUTPUTS_CONF" ]; then
+    echo -e "${GREEN}✓ outputs.conf existe${NC}"
+    
+    # Afficher la config
+    echo -e "${BLUE}Configuration actuelle:${NC}"
+    cat "$OUTPUTS_CONF" | grep -v "^#" | grep -v "^$"
+    
+    # Vérifier qu'il y a bien des serveurs configurés
+    if grep -q "server\s*=" "$OUTPUTS_CONF"; then
+        echo -e "${GREEN}✓ Serveurs forwarders configurés${NC}"
+    else
+        echo -e "${YELLOW}⚠ Pas de serveurs configurés dans outputs.conf${NC}"
+        WARNINGS=$((WARNINGS+1))
+    fi
+else
+    echo -e "${RED}✗ outputs.conf n'existe pas${NC}"
+    ERRORS=$((ERRORS+1))
+    
+    # Tentative de restauration depuis backup
+    if find_latest_backup; then
+        if [ -f "$LATEST_BACKUP/system/local/outputs.conf" ]; then
+            echo -e "${YELLOW}→ Restauration depuis backup...${NC}"
+            cp -p "$LATEST_BACKUP/system/local/outputs.conf" "$OUTPUTS_CONF"
+            chown $SPLUNK_USER:$SPLUNK_USER "$OUTPUTS_CONF"
+            echo -e "${GREEN}✓ outputs.conf restauré${NC}"
+            ERRORS=$((ERRORS-1))
+        fi
+    fi
+fi
+
+# ═══════════════════════════════════════════════════════
+# 3. VÉRIFICATION CONFIGURATION INPUTS.CONF
+# ═══════════════════════════════════════════════════════
+echo -e "\n${CYAN}═══ [3/7] Vérification inputs.conf ═══${NC}\n"
+
+INPUTS_CONF="$SPLUNK_HOME/etc/system/local/inputs.conf"
+
+if [ -f "$INPUTS_CONF" ]; then
+    echo -e "${GREEN}✓ inputs.conf existe${NC}"
+    
+    # Afficher la config
+    echo -e "${BLUE}Configuration actuelle:${NC}"
+    cat "$INPUTS_CONF" | grep -v "^#" | grep -v "^$" | head -20
+    
+    # Vérifier le port de réception
+    if grep -q "^\[splunktcp" "$INPUTS_CONF"; then
+        echo -e "${GREEN}✓ Port de réception configuré${NC}"
+    else
+        echo -e "${YELLOW}⚠ Pas de port TCP configuré (normal si pas indexer)${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ inputs.conf n'existe pas${NC}"
+    WARNINGS=$((WARNINGS+1))
+    
+    # Tentative de restauration
+    if find_latest_backup; then
+        if [ -f "$LATEST_BACKUP/system/local/inputs.conf" ]; then
+            echo -e "${YELLOW}→ Restauration depuis backup...${NC}"
+            cp -p "$LATEST_BACKUP/system/local/inputs.conf" "$INPUTS_CONF"
+            chown $SPLUNK_USER:$SPLUNK_USER "$INPUTS_CONF"
+            echo -e "${GREEN}✓ inputs.conf restauré${NC}"
+        fi
+    fi
+fi
+
+# ═══════════════════════════════════════════════════════
+# 4. VÉRIFICATION PORTS RÉSEAU
+# ═══════════════════════════════════════════════════════
+echo -e "\n${CYAN}═══ [4/7] Vérification Ports Réseau ═══${NC}\n"
+
+# Port Web (8000)
+if netstat -tuln 2>/dev/null | grep -q ":8000"; then
+    echo -e "${GREEN}✓ Port Web 8000 ouvert${NC}"
+else
+    echo -e "${RED}✗ Port 8000 non ouvert${NC}"
+    ERRORS=$((ERRORS+1))
+fi
+
+# Port Management (8089)
+if netstat -tuln 2>/dev/null | grep -q ":8089"; then
+    echo -e "${GREEN}✓ Port Management 8089 ouvert${NC}"
+else
+    echo -e "${RED}✗ Port 8089 non ouvert${NC}"
+    ERRORS=$((ERRORS+1))
+fi
+
+# Port Forwarder (9997)
+if netstat -tuln 2>/dev/null | grep -q ":9997"; then
+    echo -e "${GREEN}✓ Port Forwarder 9997 ouvert${NC}"
+    
+    # Voir les connexions actives
+    CONNECTIONS=$(netstat -an | grep ":9997" | grep ESTABLISHED | wc -l)
+    if [ $CONNECTIONS -gt 0 ]; then
+        echo -e "${GREEN}  → $CONNECTIONS forwarder(s) connecté(s)${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ Port ouvert mais aucun forwarder connecté${NC}"
+        WARNINGS=$((WARNINGS+1))
+    fi
+else
+    echo -e "${YELLOW}⚠ Port 9997 non ouvert (normal si pas d'indexer configuré)${NC}"
+fi
+
+# ═══════════════════════════════════════════════════════
+# 5. VÉRIFICATION DES INDEXES
+# ═══════════════════════════════════════════════════════
+echo -e "\n${CYAN}═══ [5/7] Vérification des Indexes ═══${NC}\n"
+
+# Liste des indexes
+echo -e "${BLUE}Liste des indexes:${NC}"
+sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk list index 2>/dev/null | grep -v "^$" | head -20
+
+# Vérifier la présence de données récentes
+echo -e "\n${BLUE}Vérification des données (dernières 24h):${NC}"
+DATA_CHECK=$(sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk search "index=* earliest=-24h | stats count" -maxout 1 2>/dev/null | grep -oP '\d+' | tail -1)
+
+if [ -n "$DATA_CHECK" ] && [ "$DATA_CHECK" -gt 0 ]; then
+    echo -e "${GREEN}✓ $DATA_CHECK événements indexés (24h)${NC}"
+else
+    echo -e "${YELLOW}⚠ Aucun événement indexé récemment${NC}"
+    WARNINGS=$((WARNINGS+1))
+fi
+
+# Détail par index
+echo -e "\n${BLUE}Détail par index (dernière heure):${NC}"
+sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk search "index=* earliest=-1h | stats count by index, host" -maxout 50 2>/dev/null || echo "Pas de données récentes"
+
+# ═══════════════════════════════════════════════════════
+# 6. VÉRIFICATION DES FORWARDERS CONNECTÉS
+# ═══════════════════════════════════════════════════════
+echo -e "\n${CYAN}═══ [6/7] Vérification Forwarders Connectés ═══${NC}\n"
+
+# Liste des forwarders via API REST
+FORWARDERS=$(curl -k -u admin:changeme https://localhost:8089/services/deployment/server/clients -s 2>/dev/null | grep -oP '<title>[^<]+</title>' | sed 's/<[^>]*>//g' | grep -v "Deployment" | head -20)
+
+if [ -n "$FORWARDERS" ]; then
+    echo -e "${GREEN}✓ Forwarders trouvés:${NC}"
+    echo "$FORWARDERS"
+else
+    echo -e "${YELLOW}⚠ Aucun forwarder détecté (vérifier mot de passe ou config)${NC}"
+    WARNINGS=$((WARNINGS+1))
+fi
+
+# Connexions TCP actives sur 9997
+echo -e "\n${BLUE}Connexions TCP actives sur port 9997:${NC}"
+netstat -an | grep ":9997" | grep ESTABLISHED || echo "Aucune connexion active"
+
+# ═══════════════════════════════════════════════════════
+# 7. VÉRIFICATION LICENCE
+# ═══════════════════════════════════════════════════════
+echo -e "\n${CYAN}═══ [7/7] Vérification Licence ═══${NC}\n"
+
+LICENSE_INFO=$(sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk list licenser-messages 2>/dev/null)
+echo "$LICENSE_INFO"
+
+if echo "$LICENSE_INFO" | grep -qi "expired\|invalid"; then
+    echo -e "${RED}✗ Problème de licence détecté${NC}"
+    ERRORS=$((ERRORS+1))
+else
+    echo -e "${GREEN}✓ Licence OK${NC}"
+fi
+
+# ═══════════════════════════════════════════════════════
+# RÉSUMÉ ET ACTIONS
+# ═══════════════════════════════════════════════════════
+echo -e "\n${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║                    RÉSUMÉ                            ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════════════════╝${NC}\n"
+
+if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
+    echo -e "${GREEN}✓✓✓ Tout est OK ! Aucun problème détecté${NC}"
+elif [ $ERRORS -eq 0 ]; then
+    echo -e "${YELLOW}⚠ $WARNINGS avertissement(s) - Non critique${NC}"
+else
+    echo -e "${RED}✗ $ERRORS erreur(s) détectée(s)${NC}"
+    echo -e "${YELLOW}⚠ $WARNINGS avertissement(s)${NC}"
+fi
+
+# ═══════════════════════════════════════════════════════
+# OPTIONS DE RÉPARATION
+# ═══════════════════════════════════════════════════════
+if [ $ERRORS -gt 0 ] || [ $WARNINGS -gt 0 ]; then
+    echo -e "\n${CYAN}═══════════════════════════════════════${NC}"
+    echo -e "${YELLOW}Options de réparation disponibles:${NC}\n"
+    
+    echo -e "1) Restaurer outputs.conf depuis backup"
+    echo -e "2) Restaurer inputs.conf depuis backup"
+    echo -e "3) Restaurer toutes les configs depuis backup"
+    echo -e "4) Redémarrer Splunk"
+    echo -e "5) Reconfigurer le port 9997 (receiving)"
+    echo -e "6) Afficher les logs de débogage"
+    echo -e "7) Quitter"
+    
+    read -p "Choix (1-7): " CHOICE
+    
+    case $CHOICE in
+        1)
+            echo -e "\n${YELLOW}Restauration outputs.conf...${NC}"
+            if find_latest_backup && [ -f "$LATEST_BACKUP/system/local/outputs.conf" ]; then
+                cp -p "$LATEST_BACKUP/system/local/outputs.conf" "$SPLUNK_HOME/etc/system/local/"
+                chown $SPLUNK_USER:$SPLUNK_USER "$SPLUNK_HOME/etc/system/local/outputs.conf"
+                echo -e "${GREEN}✓ Restauré. Redémarre Splunk:${NC}"
+                echo -e "${BLUE}sudo -u splunk $SPLUNK_HOME/bin/splunk restart${NC}"
+            fi
+            ;;
+        2)
+            echo -e "\n${YELLOW}Restauration inputs.conf...${NC}"
+            if find_latest_backup && [ -f "$LATEST_BACKUP/system/local/inputs.conf" ]; then
+                cp -p "$LATEST_BACKUP/system/local/inputs.conf" "$SPLUNK_HOME/etc/system/local/"
+                chown $SPLUNK_USER:$SPLUNK_USER "$SPLUNK_HOME/etc/system/local/inputs.conf"
+                echo -e "${GREEN}✓ Restauré. Redémarre Splunk:${NC}"
+                echo -e "${BLUE}sudo -u splunk $SPLUNK_HOME/bin/splunk restart${NC}"
+            fi
+            ;;
+        3)
+            echo -e "\n${YELLOW}Restauration complète...${NC}"
+            if find_latest_backup; then
+                cp -rp "$LATEST_BACKUP/system/local"/* "$SPLUNK_HOME/etc/system/local/" 2>/dev/null
+                chown -R $SPLUNK_USER:$SPLUNK_USER "$SPLUNK_HOME/etc/system/local/"
+                echo -e "${GREEN}✓ Configurations restaurées${NC}"
+                echo -e "${YELLOW}Redémarrage de Splunk...${NC}"
+                sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk restart
+            fi
+            ;;
+        4)
+            echo -e "\n${YELLOW}Redémarrage de Splunk...${NC}"
+            sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk restart
+            ;;
+        5)
+            echo -e "\n${YELLOW}Configuration du port 9997...${NC}"
+            cat > /tmp/inputs_9997.conf <<EOF
+[splunktcp://9997]
+disabled = false
+EOF
+            sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk add tcp 9997 -sourcetype syslog -auth admin:changeme 2>/dev/null || \
+                cp /tmp/inputs_9997.conf "$SPLUNK_HOME/etc/system/local/inputs.conf"
+            chown $SPLUNK_USER:$SPLUNK_USER "$SPLUNK_HOME/etc/system/local/inputs.conf"
+            echo -e "${GREEN}✓ Port 9997 configuré${NC}"
+            sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk restart
+            ;;
+        6)
+            echo -e "\n${BLUE}Dernières 50 lignes des logs:${NC}"
+            tail -50 "$SPLUNK_HOME/var/log/splunk/splunkd.log"
+            ;;
+        7)
+            echo -e "${GREEN}Au revoir !${NC}"
+            ;;
+    esac
+fi
+
+echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${YELLOW}Commandes utiles:${NC}"
+echo -e "  • Interface Web: ${GREEN}http://$(hostname -I | awk '{print $1}'):8000${NC}"
+echo -e "  • Statut: ${BLUE}sudo -u splunk $SPLUNK_HOME/bin/splunk status${NC}"
+echo -e "  • Logs: ${BLUE}tail -f $SPLUNK_HOME/var/log/splunk/splunkd.log${NC}"
+echo -e "  • Relancer ce script: ${BLUE}sudo bash $0${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"

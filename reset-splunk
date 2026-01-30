@@ -191,59 +191,73 @@ fi
 log "\n${GREEN}✓✓✓ Désinstallation complète terminée${NC}\n"
 
 # ═══════════════════════════════════════════════════════════════════
-# PHASE 3 : RÉINSTALLATION
+# PHASE 3 : TÉLÉCHARGEMENT ET RÉINSTALLATION AUTOMATIQUE
 # ═══════════════════════════════════════════════════════════════════
 
-header "PHASE 3/5 : RÉINSTALLATION SPLUNK"
+header "PHASE 3/5 : TÉLÉCHARGEMENT ET INSTALLATION SPLUNK"
 
-log "${YELLOW}Recherche d'un paquet Splunk...${NC}\n"
-
-# Chercher un paquet Splunk existant
-SPLUNK_PKG=""
-for location in /tmp /root ~/Downloads /home/*/Downloads; do
-    if [ -d "$location" ]; then
-        PKG_FOUND=$(find "$location" -maxdepth 1 -name "splunk-*.deb" -o -name "splunk-*.rpm" 2>/dev/null | head -1)
-        if [ -n "$PKG_FOUND" ]; then
-            SPLUNK_PKG="$PKG_FOUND"
-            break
-        fi
-    fi
-done
-
-if [ -n "$SPLUNK_PKG" ]; then
-    log "${GREEN}✓ Paquet trouvé: $SPLUNK_PKG${NC}\n"
-    log "${YELLOW}Installation en cours...${NC}"
-    
-    if [[ $SPLUNK_PKG == *.deb ]]; then
-        dpkg -i "$SPLUNK_PKG" 2>&1 | tee -a "$LOG_FILE"
-    else
-        rpm -i "$SPLUNK_PKG" 2>&1 | tee -a "$LOG_FILE"
-    fi
-    
-    log "${GREEN}✓ Splunk réinstallé${NC}"
+# Détecter l'OS
+if [ -f /etc/debian_version ]; then
+    OS_TYPE="debian"
+    SPLUNK_VERSION="9.3.2"
+    SPLUNK_BUILD="d8bb32809498"
+    SPLUNK_PKG="splunk-${SPLUNK_VERSION}-${SPLUNK_BUILD}-linux-2.6-amd64.deb"
+    SPLUNK_URL="https://download.splunk.com/products/splunk/releases/${SPLUNK_VERSION}/linux/${SPLUNK_PKG}"
+    log "${GREEN}✓ OS détecté: Debian/Ubuntu${NC}"
+elif [ -f /etc/redhat-release ]; then
+    OS_TYPE="redhat"
+    SPLUNK_VERSION="9.3.2"
+    SPLUNK_BUILD="d8bb32809498"
+    SPLUNK_PKG="splunk-${SPLUNK_VERSION}-${SPLUNK_BUILD}.x86_64.rpm"
+    SPLUNK_URL="https://download.splunk.com/products/splunk/releases/${SPLUNK_VERSION}/linux/${SPLUNK_PKG}"
+    log "${GREEN}✓ OS détecté: RedHat/CentOS${NC}"
 else
-    log "${RED}✗ Aucun paquet Splunk trouvé${NC}"
-    log "\n${YELLOW}Options:${NC}"
-    log "1. Télécharge Splunk depuis: https://www.splunk.com/download"
-    log "2. Copie le fichier .deb ou .rpm dans /tmp/"
-    log "3. Relance ce script\n"
+    log "${RED}✗ OS non supporté${NC}"
+    exit 1
+fi
+
+# Vérifier si un paquet existe déjà
+SPLUNK_PKG_PATH="/tmp/$SPLUNK_PKG"
+
+if [ -f "$SPLUNK_PKG_PATH" ]; then
+    log "${GREEN}✓ Paquet Splunk déjà présent: $SPLUNK_PKG_PATH${NC}"
+else
+    log "${YELLOW}Téléchargement de Splunk ${SPLUNK_VERSION}...${NC}"
+    log "${BLUE}URL: $SPLUNK_URL${NC}\n"
     
-    read -p "Veux-tu télécharger Splunk maintenant? (o/N): " -n 1 -r DOWNLOAD
-    echo
-    
-    if [[ $DOWNLOAD =~ ^[OoYy]$ ]]; then
-        log "\n${YELLOW}Ouvre ce lien dans ton navigateur:${NC}"
-        log "${BLUE}https://www.splunk.com/en_us/download/splunk-enterprise.html${NC}\n"
-        log "${YELLOW}Après téléchargement, copie le fichier dans /tmp/ et relance le script${NC}"
-        exit 0
+    # Télécharger avec wget ou curl
+    if command -v wget &> /dev/null; then
+        wget -O "$SPLUNK_PKG_PATH" "$SPLUNK_URL" 2>&1 | tee -a "$LOG_FILE"
+    elif command -v curl &> /dev/null; then
+        curl -o "$SPLUNK_PKG_PATH" "$SPLUNK_URL" 2>&1 | tee -a "$LOG_FILE"
     else
-        log "${RED}Réinstallation annulée${NC}"
+        log "${RED}✗ wget ou curl nécessaire pour télécharger${NC}"
+        log "${YELLOW}Installe wget: apt install wget -y${NC}"
+        exit 1
+    fi
+    
+    if [ -f "$SPLUNK_PKG_PATH" ]; then
+        PKG_SIZE=$(du -h "$SPLUNK_PKG_PATH" | cut -f1)
+        log "${GREEN}✓ Téléchargement terminé (${PKG_SIZE})${NC}"
+    else
+        log "${RED}✗ Échec du téléchargement${NC}"
         exit 1
     fi
 fi
 
+# Installation
+log "\n${YELLOW}Installation de Splunk...${NC}"
+if [ "$OS_TYPE" = "debian" ]; then
+    dpkg -i "$SPLUNK_PKG_PATH" 2>&1 | tee -a "$LOG_FILE"
+    apt-get install -f -y 2>&1 | tee -a "$LOG_FILE"  # Fixer les dépendances
+else
+    rpm -ivh "$SPLUNK_PKG_PATH" 2>&1 | tee -a "$LOG_FILE"
+fi
+
 # Vérifier l'installation
-if [ ! -d "$SPLUNK_HOME" ]; then
+if [ -d "$SPLUNK_HOME" ]; then
+    log "${GREEN}✓✓✓ Splunk ${SPLUNK_VERSION} installé avec succès${NC}\n"
+else
     log "${RED}✗ Erreur: Splunk n'a pas été installé correctement${NC}"
     exit 1
 fi

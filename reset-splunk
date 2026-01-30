@@ -1,0 +1,211 @@
+#!/bin/bash
+
+# Script de réinitialisation de licence Splunk - Lab Iron4Software
+# Préserve les forwarders et dashboards, renouvelle la période d'essai
+# Auteur: Philippe
+# Date: $(date +%Y-%m-%d)
+
+set -e
+
+SPLUNK_HOME="/opt/splunk"
+BACKUP_DIR="/opt/splunk_license_backup_$(date +%Y%m%d_%H%M%S)"
+SPLUNK_USER="splunk"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}╔════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  Script de Reset Licence Splunk - Lab Cybersécu ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════╝${NC}"
+
+# Vérification privilèges root
+if [ "$EUID" -ne 0 ]; then 
+   echo -e "${RED}[ERREUR] Ce script nécessite les droits root${NC}"
+   exit 1
+fi
+
+# Vérification que Splunk est installé
+if [ ! -d "$SPLUNK_HOME" ]; then
+    echo -e "${RED}[ERREUR] Splunk n'est pas installé dans $SPLUNK_HOME${NC}"
+    exit 1
+fi
+
+echo -e "\n${YELLOW}[INFO] Backup dans: $BACKUP_DIR${NC}"
+mkdir -p $BACKUP_DIR
+
+# Arrêt de Splunk
+echo -e "${YELLOW}[1/6] Arrêt de Splunk...${NC}"
+sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk stop 2>/dev/null || true
+sleep 3
+
+# Sauvegarde des configurations critiques
+echo -e "${GREEN}[2/6] Sauvegarde des configurations...${NC}"
+
+# Outputs.conf (configuration forwarders)
+if [ -f "$SPLUNK_HOME/etc/system/local/outputs.conf" ]; then
+    mkdir -p $BACKUP_DIR/system/local
+    cp -p $SPLUNK_HOME/etc/system/local/outputs.conf $BACKUP_DIR/system/local/
+    echo -e "  ${GREEN}✓${NC} outputs.conf (forwarders)"
+fi
+
+# Inputs.conf
+if [ -f "$SPLUNK_HOME/etc/system/local/inputs.conf" ]; then
+    mkdir -p $BACKUP_DIR/system/local
+    cp -p $SPLUNK_HOME/etc/system/local/inputs.conf $BACKUP_DIR/system/local/
+    echo -e "  ${GREEN}✓${NC} inputs.conf"
+fi
+
+# Web.conf (port, SSL, etc.)
+if [ -f "$SPLUNK_HOME/etc/system/local/web.conf" ]; then
+    cp -p $SPLUNK_HOME/etc/system/local/web.conf $BACKUP_DIR/system/local/
+    echo -e "  ${GREEN}✓${NC} web.conf"
+fi
+
+# Server.conf
+if [ -f "$SPLUNK_HOME/etc/system/local/server.conf" ]; then
+    cp -p $SPLUNK_HOME/etc/system/local/server.conf $BACKUP_DIR/system/local/
+    echo -e "  ${GREEN}✓${NC} server.conf"
+fi
+
+# User-seed.conf (admin password hash)
+if [ -f "$SPLUNK_HOME/etc/system/local/user-seed.conf" ]; then
+    cp -p $SPLUNK_HOME/etc/system/local/user-seed.conf $BACKUP_DIR/system/local/
+    echo -e "  ${GREEN}✓${NC} user-seed.conf (credentials)"
+fi
+
+# Applications et Dashboards
+if [ -d "$SPLUNK_HOME/etc/apps" ]; then
+    mkdir -p $BACKUP_DIR/apps
+    for app in $SPLUNK_HOME/etc/apps/*; do
+        app_name=$(basename "$app")
+        # Exclure les apps système Splunk
+        if [[ ! "$app_name" =~ ^(splunk_|launcher|learned|legacy|sample_app|search) ]]; then
+            cp -rp "$app" $BACKUP_DIR/apps/
+            echo -e "  ${GREEN}✓${NC} App: $app_name"
+        fi
+    done
+fi
+
+# Deployment apps (si Deployment Server)
+if [ -d "$SPLUNK_HOME/etc/deployment-apps" ]; then
+    cp -rp $SPLUNK_HOME/etc/deployment-apps $BACKUP_DIR/
+    echo -e "  ${GREEN}✓${NC} deployment-apps"
+fi
+
+# Splunk.secret (important pour le decrypt)
+if [ -f "$SPLUNK_HOME/etc/auth/splunk.secret" ]; then
+    mkdir -p $BACKUP_DIR/auth
+    cp -p $SPLUNK_HOME/etc/auth/splunk.secret $BACKUP_DIR/auth/
+    echo -e "  ${GREEN}✓${NC} splunk.secret (encryption key)"
+fi
+
+# passwd (utilisateurs locaux)
+if [ -f "$SPLUNK_HOME/etc/passwd" ]; then
+    cp -p $SPLUNK_HOME/etc/passwd $BACKUP_DIR/
+    echo -e "  ${GREEN}✓${NC} passwd (utilisateurs)"
+fi
+
+# Sauvegarde des indexes importants (optionnel)
+echo -e "\n${YELLOW}Sauvegarder les données des indexes? Cela peut être volumineux. (y/N)${NC}"
+read -t 10 -r BACKUP_INDEXES || BACKUP_INDEXES="n"
+if [[ $BACKUP_INDEXES =~ ^[Yy]$ ]]; then
+    mkdir -p $BACKUP_DIR/indexes
+    cp -rp $SPLUNK_HOME/var/lib/splunk/defaultdb $BACKUP_DIR/indexes/ 2>/dev/null || true
+    cp -rp $SPLUNK_HOME/var/lib/splunk/_audit $BACKUP_DIR/indexes/ 2>/dev/null || true
+    echo -e "  ${GREEN}✓${NC} Indexes principaux sauvegardés"
+fi
+
+# Reset de la licence
+echo -e "\n${GREEN}[3/6] Nettoyage de la licence expirée...${NC}"
+
+# Suppression des fichiers de licence
+rm -rf $SPLUNK_HOME/etc/licenses/enterprise/*.lic 2>/dev/null || true
+rm -rf $SPLUNK_HOME/etc/licenses/enterprise/*.license 2>/dev/null || true
+rm -f $SPLUNK_HOME/etc/system/local/server.conf.license 2>/dev/null || true
+
+# Suppression du GUID (force nouvelle évaluation)
+if [ -f "$SPLUNK_HOME/etc/instance.cfg" ]; then
+    echo -e "  ${YELLOW}⚠${NC}  Suppression du GUID instance..."
+    rm -f $SPLUNK_HOME/etc/instance.cfg
+fi
+
+# Nettoyage du kvstore (peut contenir info licence)
+rm -rf $SPLUNK_HOME/var/lib/splunk/kvstore/* 2>/dev/null || true
+
+# Suppression des fichiers de pooling de licence
+rm -rf $SPLUNK_HOME/var/lib/splunk/license* 2>/dev/null || true
+
+echo -e "  ${GREEN}✓${NC} Licence nettoyée"
+
+# Restauration des configurations
+echo -e "\n${GREEN}[4/6] Restauration des configurations...${NC}"
+
+# System configs
+if [ -d "$BACKUP_DIR/system/local" ]; then
+    cp -rp $BACKUP_DIR/system/local/* $SPLUNK_HOME/etc/system/local/
+    echo -e "  ${GREEN}✓${NC} Configurations système"
+fi
+
+# Apps
+if [ -d "$BACKUP_DIR/apps" ]; then
+    cp -rp $BACKUP_DIR/apps/* $SPLUNK_HOME/etc/apps/
+    echo -e "  ${GREEN}✓${NC} Applications et dashboards"
+fi
+
+# Deployment apps
+if [ -d "$BACKUP_DIR/deployment-apps" ]; then
+    cp -rp $BACKUP_DIR/deployment-apps $SPLUNK_HOME/etc/
+    echo -e "  ${GREEN}✓${NC} Deployment apps"
+fi
+
+# Auth
+if [ -d "$BACKUP_DIR/auth" ]; then
+    cp -rp $BACKUP_DIR/auth/* $SPLUNK_HOME/etc/auth/
+    echo -e "  ${GREEN}✓${NC} Authentification"
+fi
+
+# Passwd
+if [ -f "$BACKUP_DIR/passwd" ]; then
+    cp -p $BACKUP_DIR/passwd $SPLUNK_HOME/etc/
+    echo -e "  ${GREEN}✓${NC} Utilisateurs"
+fi
+
+# Permissions
+echo -e "\n${GREEN}[5/6] Correction des permissions...${NC}"
+chown -R $SPLUNK_USER:$SPLUNK_USER $SPLUNK_HOME
+echo -e "  ${GREEN}✓${NC} Permissions corrigées"
+
+# Démarrage
+echo -e "\n${GREEN}[6/6] Démarrage de Splunk avec nouvelle licence...${NC}"
+echo -e "${YELLOW}La nouvelle période d'essai de 60 jours va démarrer.${NC}\n"
+
+sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk start --accept-license --answer-yes --no-prompt
+
+sleep 5
+
+# Vérification de la licence
+echo -e "\n${BLUE}═══════════════════════════════════════${NC}"
+echo -e "${GREEN}Vérification de la licence:${NC}"
+sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk list licenser-messages
+
+echo -e "\n${BLUE}╔════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║           Reset Licence Terminé !               ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════╝${NC}"
+
+echo -e "\n${GREEN}✓ Nouvelle période d'évaluation de 60 jours activée${NC}"
+echo -e "${GREEN}✓ Forwarders préservés${NC}"
+echo -e "${GREEN}✓ Dashboards préservés${NC}"
+echo -e "${GREEN}✓ Utilisateurs préservés${NC}"
+
+echo -e "\n${YELLOW}Backup conservé dans: $BACKUP_DIR${NC}"
+echo -e "${YELLOW}Interface Web: http://$(hostname -I | awk '{print $1}'):8000${NC}"
+
+# Informations sur la licence gratuite
+echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${YELLOW}Note: Pour un lab permanent, considère:${NC}"
+echo -e "  • Licence Free (500 MB/jour): splunk.com/en_us/download.html"
+echo -e "  • Licence Dev/Test: disponible sur splunk.com"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"

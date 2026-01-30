@@ -1,0 +1,161 @@
+#!/bin/bash
+
+# Script de dépannage Splunk - Force le démarrage
+# Lab Iron4Software
+
+SPLUNK_HOME="/opt/splunk"
+SPLUNK_USER="splunk"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║  Dépannage Démarrage Splunk            ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════╝${NC}\n"
+
+# Vérification sudo
+if [ "$EUID" -ne 0 ]; then 
+   echo -e "${RED}Exécute avec sudo: sudo bash $0${NC}"
+   exit 1
+fi
+
+echo -e "${YELLOW}[1/5] Arrêt forcé de tous les processus Splunk...${NC}"
+
+# Kill tous les processus splunk
+pkill -9 splunkd 2>/dev/null && echo -e "  ${GREEN}✓${NC} splunkd arrêté"
+pkill -9 mongod 2>/dev/null && echo -e "  ${GREEN}✓${NC} mongod arrêté"
+pkill -9 splunk-optimize 2>/dev/null
+pkill -9 splunk 2>/dev/null
+
+# Attendre que tout soit bien arrêté
+sleep 3
+
+# Vérifier qu'il ne reste rien
+if pgrep -f splunk > /dev/null; then
+    echo -e "  ${RED}✗${NC} Certains processus résistent, second passage..."
+    pkill -9 -f splunk
+    sleep 2
+fi
+
+if ! pgrep -f splunk > /dev/null; then
+    echo -e "  ${GREEN}✓${NC} Tous les processus Splunk sont arrêtés"
+else
+    echo -e "  ${RED}✗${NC} Processus restants:"
+    ps aux | grep splunk | grep -v grep
+fi
+
+echo -e "\n${YELLOW}[2/5] Nettoyage des fichiers PID et locks...${NC}"
+
+# Supprimer les fichiers PID
+rm -f $SPLUNK_HOME/var/run/splunk/*.pid 2>/dev/null && echo -e "  ${GREEN}✓${NC} Fichiers .pid supprimés"
+rm -f $SPLUNK_HOME/var/run/splunk/*.lock 2>/dev/null && echo -e "  ${GREEN}✓${NC} Fichiers .lock supprimés"
+
+# Nettoyer les sockets
+rm -f $SPLUNK_HOME/var/run/splunk/*.sock 2>/dev/null && echo -e "  ${GREEN}✓${NC} Sockets nettoyés"
+
+# Nettoyer cache MongoDB
+rm -rf $SPLUNK_HOME/var/lib/splunk/kvstore/mongo/*.lock 2>/dev/null && echo -e "  ${GREEN}✓${NC} Locks MongoDB nettoyés"
+
+echo -e "\n${YELLOW}[3/5] Vérification et correction des permissions...${NC}"
+
+# Permissions Splunk
+chown -R $SPLUNK_USER:$SPLUNK_USER $SPLUNK_HOME
+echo -e "  ${GREEN}✓${NC} Propriétaire corrigé"
+
+# Permissions spécifiques
+chmod -R u+rwX,go+rX $SPLUNK_HOME
+chmod +x $SPLUNK_HOME/bin/splunk
+echo -e "  ${GREEN}✓${NC} Permissions des exécutables OK"
+
+# Répertoires critiques
+mkdir -p $SPLUNK_HOME/var/run/splunk
+mkdir -p $SPLUNK_HOME/var/lib/splunk
+chown -R $SPLUNK_USER:$SPLUNK_USER $SPLUNK_HOME/var
+echo -e "  ${GREEN}✓${NC} Répertoires runtime créés"
+
+echo -e "\n${YELLOW}[4/5] Vérification de la configuration...${NC}"
+
+# Vérifier que les fichiers de config essentiels existent
+if [ -f "$SPLUNK_HOME/etc/system/local/outputs.conf" ]; then
+    echo -e "  ${GREEN}✓${NC} outputs.conf présent"
+else
+    echo -e "  ${YELLOW}⚠${NC} outputs.conf absent"
+fi
+
+if [ -f "$SPLUNK_HOME/etc/splunk-launch.conf" ]; then
+    echo -e "  ${GREEN}✓${NC} splunk-launch.conf présent"
+else
+    echo -e "  ${RED}✗${NC} splunk-launch.conf manquant (critique)"
+fi
+
+echo -e "\n${YELLOW}[5/5] Démarrage de Splunk...${NC}"
+
+# Démarrage avec l'utilisateur splunk
+echo -e "${BLUE}Lancement en cours...${NC}\n"
+
+sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk start --accept-license --answer-yes --no-prompt 2>&1 | tee /tmp/splunk_start.log
+
+# Attendre le démarrage
+echo -e "\n${YELLOW}Attente du démarrage complet...${NC}"
+sleep 5
+
+# Vérification
+echo -e "\n${BLUE}═══════════════════════════════════════${NC}"
+echo -e "${GREEN}Vérification du statut:${NC}\n"
+
+if pgrep -f "splunkd" > /dev/null; then
+    echo -e "  ${GREEN}✓ Splunkd est démarré${NC}"
+    
+    # Vérifier les ports
+    if netstat -tuln 2>/dev/null | grep -q ":8000"; then
+        echo -e "  ${GREEN}✓ Port Web (8000) ouvert${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ Port 8000 pas encore ouvert (démarrage en cours)${NC}"
+    fi
+    
+    if netstat -tuln 2>/dev/null | grep -q ":8089"; then
+        echo -e "  ${GREEN}✓ Port Management (8089) ouvert${NC}"
+    fi
+    
+    if netstat -tuln 2>/dev/null | grep -q ":9997"; then
+        echo -e "  ${GREEN}✓ Port Forwarder (9997) ouvert${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ Port 9997 pas ouvert (normal si pas configuré comme receiver)${NC}"
+    fi
+    
+    echo -e "\n${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║    Splunk démarré avec SUCCÈS !        ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    echo -e "\n${YELLOW}🌐 Interface Web: ${GREEN}http://$SERVER_IP:8000${NC}"
+    echo -e "${YELLOW}📊 Statut: ${GREEN}sudo -u splunk $SPLUNK_HOME/bin/splunk status${NC}"
+    
+    # Afficher la licence
+    echo -e "\n${BLUE}Vérification de la licence dans 10 secondes...${NC}"
+    sleep 10
+    sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk list licenser-messages 2>/dev/null || echo "Licence en cours d'initialisation"
+    
+else
+    echo -e "  ${RED}✗ Splunkd n'est pas démarré${NC}\n"
+    echo -e "${RED}╔════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║    ÉCHEC du démarrage                  ║${NC}"
+    echo -e "${RED}╚════════════════════════════════════════╝${NC}\n"
+    
+    echo -e "${YELLOW}📋 Dernières lignes du log:${NC}"
+    tail -30 $SPLUNK_HOME/var/log/splunk/splunkd.log 2>/dev/null || echo "Log non accessible"
+    
+    echo -e "\n${YELLOW}💡 Actions de dépannage:${NC}"
+    echo -e "  1. Vérifier les logs complets:"
+    echo -e "     ${BLUE}tail -f $SPLUNK_HOME/var/log/splunk/splunkd.log${NC}"
+    echo -e "  2. Essayer de démarrer en debug:"
+    echo -e "     ${BLUE}sudo -u splunk $SPLUNK_HOME/bin/splunk start --debug${NC}"
+    echo -e "  3. Vérifier l'espace disque:"
+    echo -e "     ${BLUE}df -h${NC}"
+    echo -e "  4. Si ça persiste, réinstallation propre nécessaire"
+fi
+
+echo ""

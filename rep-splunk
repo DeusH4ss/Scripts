@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ═══════════════════════════════════════════════════════════════════
-# SCRIPT TOUT-EN-UN - Diagnostic et Réparation Splunk
-# Lab Iron4Software - Résout TOUS les problèmes automatiquement
+# SCRIPT TOUT-EN-UN V2 - Diagnostic et Réparation Splunk AGGRESSIF
+# Lab Iron4Software - Résout TOUS les problèmes + Safe-Mode
 # ═══════════════════════════════════════════════════════════════════
 
 SPLUNK_HOME="/opt/splunk"
@@ -58,9 +58,9 @@ success() {
 # ═══════════════════════════════════════════════════════════════════
 
 clear
-header "DIAGNOSTIC ET RÉPARATION AUTOMATIQUE SPLUNK"
+header "DIAGNOSTIC ET RÉPARATION AUTOMATIQUE SPLUNK V2"
 
-log "${MAGENTA}Analyse en cours... Les réparations seront automatiques.${NC}"
+log "${MAGENTA}Analyse AGRESSIVE avec détection splunk_assist...${NC}"
 log "${MAGENTA}Logs détaillés: $LOG_FILE${NC}\n"
 
 # Vérification root
@@ -125,32 +125,58 @@ chmod +x $SPLUNK_HOME/bin/splunk
 success "Permissions corrigées"
 
 # ═══════════════════════════════════════════════════════════════════
-# PHASE 3 : RESET DE LA LICENCE (CRITIQUE)
+# PHASE 3 : RESET DE LA LICENCE (CRITIQUE + AGGRESSIF)
 # ═══════════════════════════════════════════════════════════════════
 
-header "PHASE 3/5 : RESET DE LA LICENCE"
+header "PHASE 3/5 : RESET LICENCE + DÉSACTIVATION APPS PROBLÉMATIQUES"
 
-info "Analyse des logs précédents..."
+info "Analyse approfondie des logs..."
+LICENSE_ISSUES=false
+SPLUNK_ASSIST_ISSUES=false
+
 if grep -q "LicenseRestriction\|HTTP 402" $SPLUNK_HOME/var/log/splunk/splunkd.log 2>/dev/null; then
     problem "Licence expirée ou restreinte détectée (HTTP 402)"
+    LICENSE_ISSUES=true
+fi
+
+if grep -q "splunk_assist.*ERROR\|splunk_assist.*LicenseRestriction" $SPLUNK_HOME/var/log/splunk/splunkd.log 2>/dev/null; then
+    problem "App splunk_assist bloque Splunk avec erreurs de licence"
+    SPLUNK_ASSIST_ISSUES=true
+fi
+
+# CRITIQUE : Désactiver splunk_assist EN PREMIER
+if [ -d "$SPLUNK_HOME/etc/apps/splunk_assist" ]; then
+    if [ "$SPLUNK_ASSIST_ISSUES" = true ]; then
+        info "Désactivation IMMÉDIATE de splunk_assist (BLOQUE TOUT)..."
+        mv $SPLUNK_HOME/etc/apps/splunk_assist $SPLUNK_HOME/etc/apps/splunk_assist.DISABLED 2>/dev/null
+        fix "App splunk_assist désactivée (empêchait l'ouverture des ports)"
+    else
+        info "splunk_assist présente - désactivation préventive..."
+        mv $SPLUNK_HOME/etc/apps/splunk_assist $SPLUNK_HOME/etc/apps/splunk_assist.DISABLED 2>/dev/null
+        fix "App splunk_assist désactivée préventivement"
+    fi
+fi
+
+# Reset COMPLET et PROFOND de la licence
+if [ "$LICENSE_ISSUES" = true ] || [ "$SPLUNK_ASSIST_ISSUES" = true ]; then
+    info "Reset COMPLET de la licence (nettoyage PROFOND)..."
     
-    info "Suppression complète de la licence..."
+    # Supprimer TOUS les fichiers de licence
     rm -rf $SPLUNK_HOME/etc/licenses/enterprise/* 2>/dev/null
+    rm -rf $SPLUNK_HOME/etc/licenses/download-trial/* 2>/dev/null
     rm -f $SPLUNK_HOME/etc/instance.cfg 2>/dev/null
     rm -rf $SPLUNK_HOME/var/lib/splunk/license* 2>/dev/null
     
-    fix "Licence nettoyée - nouvelle période d'essai sera activée"
+    # Nettoyer KVStore COMPLÈTEMENT (contient des infos de licence)
+    info "Nettoyage KVStore (contient état licence)..."
+    rm -rf $SPLUNK_HOME/var/lib/splunk/kvstore/* 2>/dev/null
+    
+    # Nettoyer fishbucket
+    rm -rf $SPLUNK_HOME/var/lib/splunk/fishbucket/* 2>/dev/null
+    
+    fix "Licence COMPLÈTEMENT nettoyée - nouvelle période forcée"
 else
     success "Pas de problème de licence détecté"
-fi
-
-# Désactiver apps problématiques
-if [ -d "$SPLUNK_HOME/etc/apps/splunk_assist" ]; then
-    if grep -q "splunk_assist.*ERROR" $SPLUNK_HOME/var/log/splunk/splunkd.log 2>/dev/null; then
-        problem "App splunk_assist cause des erreurs"
-        mv $SPLUNK_HOME/etc/apps/splunk_assist $SPLUNK_HOME/etc/apps/splunk_assist.disabled 2>/dev/null
-        fix "App splunk_assist désactivée"
-    fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════
@@ -195,10 +221,17 @@ EOF
     fi
 fi
 
-# Vérifier outputs.conf (ne devrait pas exister sur indexer)
-if [ -f "$SPLUNK_HOME/etc/system/local/outputs.conf" ]; then
-    info "outputs.conf trouvé (backup restauré)"
-    success "Configuration forwarders préservée"
+# Vérifier/créer web.conf
+if [ ! -f "$SPLUNK_HOME/etc/system/local/web.conf" ]; then
+    info "Création de web.conf pour port 8000..."
+    cat > $SPLUNK_HOME/etc/system/local/web.conf <<EOF
+[settings]
+httpport = 8000
+enableSplunkWebSSL = false
+startwebserver = 1
+EOF
+    chown $SPLUNK_USER:$SPLUNK_USER $SPLUNK_HOME/etc/system/local/web.conf
+    fix "web.conf créé"
 fi
 
 # ═══════════════════════════════════════════════════════════════════
@@ -211,8 +244,8 @@ info "Démarrage de Splunk avec nouvelle configuration..."
 sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk start --accept-license --answer-yes --no-prompt 2>&1 | tee -a "$LOG_FILE"
 
 # Attendre le démarrage complet
-info "Attente du démarrage complet (15 secondes)..."
-sleep 15
+info "Attente du démarrage complet (20 secondes)..."
+sleep 20
 
 # ═══════════════════════════════════════════════════════════════════
 # VÉRIFICATIONS FINALES
@@ -222,7 +255,7 @@ header "VÉRIFICATIONS FINALES"
 
 # Test 1 : Processus Splunk
 if pgrep -f "splunkd" > /dev/null; then
-    success "Splunkd actif (PID: $(pgrep -f splunkd))"
+    success "Splunkd actif (PID: $(pgrep -f splunkd | head -1))"
 else
     problem "Splunkd n'est pas démarré"
 fi
@@ -233,20 +266,25 @@ PORT_8000=$(netstat -tuln 2>/dev/null | grep ":8000" || echo "")
 PORT_8089=$(netstat -tuln 2>/dev/null | grep ":8089" || echo "")
 PORT_9997=$(netstat -tuln 2>/dev/null | grep ":9997" || echo "")
 
+PORTS_OPEN=0
+
 if [ -n "$PORT_8000" ]; then
     success "Port 8000 (Web UI) : OUVERT"
+    PORTS_OPEN=$((PORTS_OPEN+1))
 else
     problem "Port 8000 (Web UI) : FERMÉ"
 fi
 
 if [ -n "$PORT_8089" ]; then
     success "Port 8089 (Management) : OUVERT"
+    PORTS_OPEN=$((PORTS_OPEN+1))
 else
     problem "Port 8089 (Management) : FERMÉ"
 fi
 
 if [ -n "$PORT_9997" ]; then
     success "Port 9997 (Forwarders) : OUVERT ✓✓✓"
+    PORTS_OPEN=$((PORTS_OPEN+1))
     CONNECTED=$(netstat -an | grep ":9997" | grep ESTABLISHED | wc -l)
     if [ $CONNECTED -gt 0 ]; then
         success "  → $CONNECTED forwarder(s) connecté(s)"
@@ -255,6 +293,32 @@ if [ -n "$PORT_9997" ]; then
     fi
 else
     problem "Port 9997 (Forwarders) : FERMÉ"
+fi
+
+# Détection critique : Aucun port ouvert
+if [ $PORTS_OPEN -eq 0 ] && pgrep -f "splunkd" > /dev/null; then
+    problem "CRITIQUE : Splunk tourne mais AUCUN port n'est ouvert !"
+    info "Les apps restantes bloquent peut-être le démarrage..."
+    
+    log "\n${YELLOW}Dernières erreurs dans les logs:${NC}"
+    tail -30 $SPLUNK_HOME/var/log/splunk/splunkd.log | grep -i "ERROR\|FATAL" | tail -10 | tee -a "$LOG_FILE"
+    
+    log "\n${RED}╔════════════════════════════════════════════════════╗${NC}"
+    log "${RED}║  OPTION SAFE-MODE DISPONIBLE                       ║${NC}"
+    log "${RED}╚════════════════════════════════════════════════════╝${NC}"
+    
+    read -p "Redémarrer en Safe-Mode (sans apps)? (o/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[OoYy]$ ]]; then
+        info "Redémarrage en Safe-Mode..."
+        sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk stop
+        sleep 3
+        sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk start --safe-mode --accept-license --answer-yes
+        sleep 20
+        
+        log "\n${YELLOW}Vérification ports après Safe-Mode:${NC}"
+        netstat -tuln | grep -E "8000|8089|9997"
+    fi
 fi
 
 # Test 3 : Licence
@@ -311,13 +375,17 @@ log "${CYAN}══════════════════════�
 log "${CYAN}ACTIONS RECOMMANDÉES${NC}"
 log "${CYAN}═══════════════════════════════════════════════${NC}"
 
-if [ -z "$PORT_9997" ]; then
-    log "${RED}1. URGENT: Port 9997 pas ouvert${NC}"
-    log "${YELLOW}   → Vérifie les logs: tail -50 /opt/splunk/var/log/splunk/splunkd.log${NC}"
+if [ $PORTS_OPEN -eq 0 ]; then
+    log "${RED}1. URGENT: Aucun port ouvert${NC}"
+    log "${YELLOW}   → Voir logs: tail -50 /opt/splunk/var/log/splunk/splunkd.log${NC}"
+    log "${YELLOW}   → Essayer Safe-Mode: sudo -u splunk /opt/splunk/bin/splunk start --safe-mode${NC}"
+elif [ -z "$PORT_9997" ]; then
+    log "${RED}1. Port 9997 pas ouvert${NC}"
+    log "${YELLOW}   → Vérifie inputs.conf: cat /opt/splunk/etc/system/local/inputs.conf${NC}"
 fi
 
 if echo "$LICENSE_MSG" | grep -qi "expired\|violation"; then
-    log "${YELLOW}2. Installer une licence Free permanente:${NC}"
+    log "\n${YELLOW}2. Installer une licence Free permanente:${NC}"
     log "   a) Télécharge: https://www.splunk.com/en_us/download.html"
     log "   b) Installe: sudo -u splunk /opt/splunk/bin/splunk add licenses /chemin/splunk.license"
     log "   c) Limite: 500 MB/jour (suffisant pour un lab)"
@@ -337,21 +405,22 @@ log "\n${MAGENTA}Logs complets sauvegardés dans: $LOG_FILE${NC}"
 log "${YELLOW}Commandes utiles:${NC}"
 log "  • Statut: ${BLUE}sudo -u splunk /opt/splunk/bin/splunk status${NC}"
 log "  • Logs live: ${BLUE}tail -f /opt/splunk/var/log/splunk/splunkd.log${NC}"
+log "  • Safe-Mode: ${BLUE}sudo -u splunk /opt/splunk/bin/splunk start --safe-mode${NC}"
 log "  • Relancer ce script: ${BLUE}sudo bash $0${NC}"
 log ""
 
 # Résumé visuel
-if [ $PROBLEMS_FOUND -eq 0 ] && [ -n "$PORT_9997" ]; then
+if [ $PORTS_OPEN -eq 3 ]; then
     log "${GREEN}╔════════════════════════════════════════════════════╗${NC}"
-    log "${GREEN}║  ✓ Splunk opérationnel et prêt pour les forwarders ║${NC}"
+    log "${GREEN}║  ✓✓✓ Splunk 100% opérationnel - Tous ports ouverts ║${NC}"
     log "${GREEN}╚════════════════════════════════════════════════════╝${NC}"
-elif [ -n "$PORT_9997" ]; then
+elif [ $PORTS_OPEN -gt 0 ]; then
     log "${YELLOW}╔════════════════════════════════════════════════════╗${NC}"
-    log "${YELLOW}║  ⚠ Splunk fonctionne mais avec quelques avertissements ║${NC}"
+    log "${YELLOW}║  ⚠ Splunk partiellement fonctionnel ($PORTS_OPEN/3 ports) ║${NC}"
     log "${YELLOW}╚════════════════════════════════════════════════════╝${NC}"
 else
     log "${RED}╔════════════════════════════════════════════════════╗${NC}"
-    log "${RED}║  ✗ Problèmes critiques - voir logs ci-dessus       ║${NC}"
+    log "${RED}║  ✗ Problèmes critiques - Utiliser Safe-Mode        ║${NC}"
     log "${RED}╚════════════════════════════════════════════════════╝${NC}"
 fi
 

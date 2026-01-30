@@ -49,13 +49,22 @@ log "${YELLOW}Backup sera sauvegardé dans: $BACKUP_DIR${NC}"
 log "${YELLOW}Logs du processus: $LOG_FILE${NC}\n"
 
 if [ ! -d "$SPLUNK_HOME" ]; then
-    log "${RED}Splunk n'est pas installé dans $SPLUNK_HOME${NC}"
-    exit 1
+    log "${YELLOW}⚠ Splunk n'est pas installé dans $SPLUNK_HOME${NC}"
+    log "${YELLOW}→ Passage direct à l'installation (pas de backup nécessaire)${NC}\n"
+    SKIP_BACKUP=true
+else
+    log "${GREEN}✓ Splunk détecté dans $SPLUNK_HOME${NC}"
+    SKIP_BACKUP=false
 fi
 
 mkdir -p "$BACKUP_DIR"
 
-# Arrêt de Splunk
+if [ "$SKIP_BACKUP" = true ]; then
+    log "${YELLOW}Sauvegarde ignorée - Installation propre${NC}\n"
+    BACKUP_SIZE="N/A"
+    # Sauter directement à la phase 3
+else
+    # Arrêt de Splunk
 log "${YELLOW}[1.1] Arrêt de Splunk...${NC}"
 if pgrep -f "splunkd" > /dev/null; then
     sudo -u $SPLUNK_USER $SPLUNK_HOME/bin/splunk stop 2>&1 | tee -a "$LOG_FILE"
@@ -147,15 +156,20 @@ BACKUP_SIZE=$(du -sh "$BACKUP_DIR" | cut -f1)
 log "${GREEN}✓ Backup créé: $BACKUP_SIZE${NC}"
 log "${GREEN}✓ Location: $BACKUP_DIR${NC}\n"
 
+fi  # Fin du bloc if SKIP_BACKUP pour la sauvegarde
+
 # ═══════════════════════════════════════════════════════════════════
 # PHASE 2 : DÉSINSTALLATION COMPLÈTE
 # ═══════════════════════════════════════════════════════════════════
 
 header "PHASE 2/5 : DÉSINSTALLATION COMPLÈTE"
 
-log "${YELLOW}Désinstallation de Splunk en cours...${NC}\n"
+if [ "$SKIP_BACKUP" = true ]; then
+    log "${YELLOW}Splunk n'était pas installé - Passage direct à l'installation${NC}\n"
+else
+    log "${YELLOW}Désinstallation de Splunk en cours...${NC}\n"
 
-# Détection du système de paquets
+    # Détection du système de paquets
 if command -v dpkg &> /dev/null; then
     PKG_MANAGER="dpkg"
     log "${YELLOW}Système détecté: Debian/Ubuntu (dpkg)${NC}"
@@ -189,6 +203,8 @@ else
 fi
 
 log "\n${GREEN}✓✓✓ Désinstallation complète terminée${NC}\n"
+
+fi  # Fin du bloc if SKIP_BACKUP pour la désinstallation
 
 # ═══════════════════════════════════════════════════════════════════
 # PHASE 3 : TÉLÉCHARGEMENT ET RÉINSTALLATION AUTOMATIQUE
@@ -268,7 +284,36 @@ fi
 
 header "PHASE 4/5 : RESTAURATION DES CONFIGURATIONS"
 
-log "${YELLOW}Restauration depuis: $BACKUP_DIR${NC}\n"
+if [ "$SKIP_BACKUP" = true ]; then
+    log "${YELLOW}Pas de backup à restaurer - Configuration initiale de Splunk${NC}\n"
+    
+    # Créer une configuration minimale pour les forwarders
+    log "${YELLOW}Création configuration de base pour forwarders...${NC}"
+    mkdir -p $SPLUNK_HOME/etc/system/local
+    
+    # inputs.conf pour port 9997
+    cat > $SPLUNK_HOME/etc/system/local/inputs.conf <<EOF
+[default]
+host = $(hostname)
+
+[splunktcp://9997]
+disabled = false
+connection_host = ip
+EOF
+    
+    # web.conf pour port 8000
+    cat > $SPLUNK_HOME/etc/system/local/web.conf <<EOF
+[settings]
+httpport = 8000
+enableSplunkWebSSL = false
+startwebserver = 1
+EOF
+    
+    chown -R $SPLUNK_USER:$SPLUNK_USER $SPLUNK_HOME/etc/system/local
+    log "${GREEN}✓ Configuration de base créée${NC}"
+    
+else
+    log "${YELLOW}Restauration depuis: $BACKUP_DIR${NC}\n"
 
 # Restaurer system/local
 if [ -d "$BACKUP_DIR/system/local" ]; then
@@ -330,6 +375,8 @@ fi
 log "\n${YELLOW}Correction des permissions...${NC}"
 chown -R $SPLUNK_USER:$SPLUNK_USER $SPLUNK_HOME
 log "${GREEN}✓ Permissions corrigées${NC}"
+
+fi  # Fin du bloc if SKIP_BACKUP
 
 # ═══════════════════════════════════════════════════════════════════
 # PHASE 5 : PREMIER DÉMARRAGE ET VÉRIFICATION
@@ -399,10 +446,14 @@ log "${GREEN}🌐 Interface Web: http://$SERVER_IP:8000${NC}"
 log "${GREEN}📊 Username: admin / Password: changeme${NC}"
 log "${CYAN}═══════════════════════════════════════════════════${NC}\n"
 
-log "${YELLOW}Fichiers sauvegardés:${NC}"
-log "  • Backup complet: ${GREEN}$BACKUP_DIR${NC}"
-log "  • Log install: ${GREEN}$LOG_FILE${NC}"
-log "  • Taille backup: ${GREEN}$BACKUP_SIZE${NC}\n"
+log "${YELLOW}Fichiers:${NC}"
+if [ "$SKIP_BACKUP" = false ]; then
+    log "  • Backup complet: ${GREEN}$BACKUP_DIR${NC}"
+    log "  • Taille backup: ${GREEN}$BACKUP_SIZE${NC}"
+else
+    log "  • Installation propre (pas de backup)"
+fi
+log "  • Log install: ${GREEN}$LOG_FILE${NC}\n"
 
 log "${YELLOW}Prochaines étapes:${NC}"
 log "  1. Vérifie l'interface: http://$SERVER_IP:8000"
@@ -411,5 +462,9 @@ log "  3. Configure les forwarders: server = $SERVER_IP:9997"
 log "  4. Lance une recherche: ${BLUE}index=* | stats count by host${NC}"
 log "  5. Considère une licence Free pour usage permanent\n"
 
-log "${CYAN}Le backup est conservé dans: $BACKUP_DIR${NC}"
-log "${CYAN}Tu peux le supprimer après vérification: rm -rf $BACKUP_DIR${NC}\n"
+if [ "$SKIP_BACKUP" = false ]; then
+    log "${CYAN}Le backup est conservé dans: $BACKUP_DIR${NC}"
+    log "${CYAN}Tu peux le supprimer après vérification: rm -rf $BACKUP_DIR${NC}\n"
+else
+    log "${CYAN}Installation propre terminée - Aucun backup créé${NC}\n"
+fi

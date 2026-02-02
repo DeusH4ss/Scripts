@@ -1,71 +1,39 @@
 #!/bin/bash
+# Script minimal - Lance et c'est tout
 
-# Script ultra-simple - Ne bloque JAMAIS
-# Fait TOUT sans attendre
-
-set -e  # Arrêter si erreur critique
-trap 'echo "Erreur ligne $LINENO"' ERR
-
-clear
-echo "════════════════════════════════════════════"
-echo "  RESET TOTAL SPLUNK - Ultra Simple"
-echo "════════════════════════════════════════════"
+echo "=== RESET SPLUNK ==="
 echo ""
 
-if [ "$EUID" -ne 0 ]; then 
-   echo "Lance avec: sudo bash $0"
-   exit 1
-fi
-
-# 1. BACKUP RAPIDE
-echo "[1/5] Backup..."
-mkdir -p /root/backup_splunk_$(date +%Y%m%d) 2>/dev/null || true
-cp -r /opt/splunk/etc /root/backup_splunk_$(date +%Y%m%d)/ 2>/dev/null || true
-echo "✓ OK"
-echo ""
-
-# 2. KILL BRUTAL
-echo "[2/5] Kill processus..."
-killall -9 splunkd 2>/dev/null || true
-killall -9 mongod 2>/dev/null || true
-killall -9 python 2>/dev/null || true
+# Kill
+echo "1. Kill processus..."
+killall -9 splunkd mongod python 2>/dev/null || true
 pkill -9 -f splunk 2>/dev/null || true
 sleep 2
-echo "✓ OK"
-echo ""
 
-# 3. PURGE PAQUET
-echo "[3/5] Purge paquet..."
+# Purge
+echo "2. Purge paquet..."
 dpkg --purge splunk 2>/dev/null || true
 apt-get purge -y splunk 2>/dev/null || true
-rpm -e splunk 2>/dev/null || true
-echo "✓ OK"
-echo ""
 
-# 4. SUPPRIMER TOUT
-echo "[4/5] Suppression totale..."
-rm -rf /opt/splunk 2>/dev/null || true
-rm -rf /var/log/splunk 2>/dev/null || true
-rm -rf /etc/init.d/splunk 2>/dev/null || true
-echo "✓ /opt/splunk supprimé"
-echo ""
+# Delete
+echo "3. Suppression..."
+rm -rf /opt/splunk
+rm -rf /var/log/splunk
 
-# 5. RÉINSTALLATION
-echo "[5/5] Installation propre..."
-
-# Télécharger si besoin
-PKG="/tmp/splunk-9.3.2-d8bb32809498-linux-2.6-amd64.deb"
-if [ ! -f "$PKG" ]; then
-    echo "Téléchargement..."
-    wget -q --show-progress -O "$PKG" "https://download.splunk.com/products/splunk/releases/9.3.2/linux/splunk-9.3.2-d8bb32809498-linux-2.6-amd64.deb"
+# Download
+echo "4. Téléchargement..."
+cd /tmp
+if [ ! -f splunk-9.3.2-d8bb32809498-linux-2.6-amd64.deb ]; then
+    wget -q --show-progress https://download.splunk.com/products/splunk/releases/9.3.2/linux/splunk-9.3.2-d8bb32809498-linux-2.6-amd64.deb
 fi
 
-# Installer
-echo "Installation..."
-dpkg -i "$PKG"
+# Install
+echo "5. Installation..."
+dpkg -i splunk-9.3.2-d8bb32809498-linux-2.6-amd64.deb
 apt-get install -f -y
 
-# Config minimale
+# Config
+echo "6. Configuration..."
 mkdir -p /opt/splunk/etc/system/local
 
 cat > /opt/splunk/etc/system/local/user-seed.conf <<'EOF'
@@ -88,30 +56,21 @@ EOF
 
 chown -R splunk:splunk /opt/splunk
 
-# Démarrer
-echo "Démarrage..."
+# Start
+echo "7. Démarrage..."
 sudo -u splunk /opt/splunk/bin/splunk start --accept-license --answer-yes --no-prompt
 
 echo ""
 echo "Attente 30 secondes..."
 sleep 30
 
-# Vérifier ports
 echo ""
-echo "════════════════════════════════════════════"
-echo "  VÉRIFICATION"
-echo "════════════════════════════════════════════"
-
-netstat -tuln | grep -E "8000|8089|9997" || echo "Ports pas encore ouverts, attendre..."
+echo "=== VÉRIFICATION ==="
+netstat -tuln | grep -E "8000|8089|9997"
 
 echo ""
-echo "════════════════════════════════════════════"
-IP=$(hostname -I | awk '{print $1}')
-echo "URL: http://$IP:8000"
-echo "Username: admin"
-echo "Password: Admin123!"
-echo "════════════════════════════════════════════"
-echo ""
-echo "Si les ports ne sont pas ouverts, attendre 1-2 minutes"
-echo "puis vérifie: sudo netstat -tuln | grep -E '8000|9997'"
-echo ""
+echo "==========================="
+echo "URL: http://$(hostname -I | awk '{print $1}'):8000"
+echo "User: admin"
+echo "Pass: Admin123!"
+echo "==========================="

@@ -1,66 +1,53 @@
 #!/bin/bash
-# Solution FINALE basée sur recherches Splunk Community + Doc officielle
-# Méthode TAR (plus fiable que DEB) + Désactivation firewall
 
-echo "╔════════════════════════════════════════════╗"
-echo "║  SOLUTION FINALE - Méthode TAR + Reboot    ║"
-echo "╚════════════════════════════════════════════╝"
+##############################################
+# SCRIPT DE RÉPARATION COMPLÈTE SPLUNK
+# Répare + Dashboard + Forwarders
+##############################################
+
+set -e
+
+echo "════════════════════════════════════════"
+echo "  RÉPARATION COMPLÈTE SPLUNK"
+echo "════════════════════════════════════════"
 echo ""
 
-# 1. KILL BRUTAL
-echo "[1/5] Kill processus..."
-killall -9 splunkd mongod python3 python 2>/dev/null || true
-pkill -9 -f splunk 2>/dev/null || true
+SPLUNK_HOME="/opt/splunk"
+ADMIN_PASS="Admin123G4"
+
+# 1. RÉPARATION SPLUNK
+echo "[1/5] Réparation Splunk..."
+
+# Stop proprement
+sudo -u splunk $SPLUNK_HOME/bin/splunk stop 2>/dev/null || true
 sleep 3
+killall -9 splunkd mongod python3 2>/dev/null || true
+sleep 2
 
-# 2. SUPPRESSION TOTALE
-echo "[2/5] Suppression complète..."
-rm -rf /opt/splunk
-rm -rf /opt/splunkforwarder
-rm -rf /var/log/splunk
+# Nettoyer
+rm -rf $SPLUNK_HOME/var/lib/splunk/kvstore/*
+rm -rf $SPLUNK_HOME/var/run/splunk/*
+rm -rf $SPLUNK_HOME/var/lib/splunk/fishbucket/*
 
-# 3. DÉSACTIVER FIREWALL (cause principale)
-echo "[3/5] Désactivation firewall..."
-systemctl stop firewalld 2>/dev/null || true
-systemctl stop iptables 2>/dev/null || true
-systemctl stop ufw 2>/dev/null || true
-ufw disable 2>/dev/null || true
-
-# 4. INSTALLATION TAR (RECOMMANDÉE)
-echo "[4/5] Installation via TAR..."
-cd /tmp
-
-TAR="splunk-9.3.2-d8bb32809498-Linux-x86_64.tgz"
-URL="https://download.splunk.com/products/splunk/releases/9.3.2/linux/$TAR"
-
-if [ ! -f "$TAR" ]; then
-    echo "Téléchargement..."
-    wget -q --show-progress "$URL" || exit 1
-fi
-
-echo "Extraction dans /opt..."
-tar xzf "$TAR" -C /opt
-
-# 5. CONFIG
-echo "[5/5] Configuration..."
-
-# Créer user splunk si nécessaire
-id splunk 2>/dev/null || useradd -r -m -s /bin/bash splunk
-
-# Password
-cat > /opt/splunk/etc/system/local/user-seed.conf <<'EOF'
+# Reset password
+cat > $SPLUNK_HOME/etc/system/local/user-seed.conf <<EOF
 [user_info]
-USERNAME = admin  
-PASSWORD = Admin123!
+USERNAME = admin
+PASSWORD = $ADMIN_PASS
 EOF
 
-# Ports
-cat > /opt/splunk/etc/system/local/inputs.conf <<'EOF'
+# Config forwarders (port 9997)
+cat > $SPLUNK_HOME/etc/system/local/inputs.conf <<EOF
 [splunktcp://9997]
 disabled = false
+connection_host = ip
+
+[default]
+host = $(hostname)
 EOF
 
-cat > /opt/splunk/etc/system/local/web.conf <<'EOF'
+# Config web
+cat > $SPLUNK_HOME/etc/system/local/web.conf <<EOF
 [settings]
 httpport = 8000
 enableSplunkWebSSL = false
@@ -68,53 +55,153 @@ startwebserver = 1
 EOF
 
 # Permissions
-chown -R splunk:splunk /opt/splunk
+chown -R splunk:splunk $SPLUNK_HOME
 
-# START
+echo "✓ Réparation OK"
 echo ""
-echo "Démarrage..."
-sudo -u splunk /opt/splunk/bin/splunk start --accept-license --answer-yes --no-prompt
 
+# 2. DÉMARRAGE
+echo "[2/5] Démarrage Splunk..."
+sudo -u splunk $SPLUNK_HOME/bin/splunk start --accept-license --answer-yes --no-prompt
+
+echo "Attente 40 secondes..."
+sleep 40
+
+echo "✓ Splunk démarré"
 echo ""
-echo "Attente 30 sec..."
-sleep 30
 
-# Vérification
+# 3. VÉRIFICATION
+echo "[3/5] Vérification..."
+netstat -tuln | grep -E ":8000|:8089|:9997" || echo "⚠ Ports pas encore ouverts"
 echo ""
-echo "═══ VÉRIFICATION ═══"
-netstat -tuln | grep -E ":8000|:8089|:9997"
 
-SUCCESS=$(netstat -tuln | grep -E ":8000|:8089|:9997" | wc -l)
+# 4. INSTALLATION DASHBOARD
+echo "[4/5] Installation dashboard..."
 
-if [ "$SUCCESS" -eq 3 ]; then
-    echo ""
-    echo "✓✓✓ SUCCÈS - Tous les ports ouverts"
-else
-    echo ""
-    echo "⚠ Seuls $SUCCESS/3 ports ouverts"
-    echo ""
-    echo "SOLUTION D'APRÈS LES FORUMS SPLUNK:"
-    echo "→ REBOOT du serveur résout 90% des problèmes"
-    echo ""
-    read -p "Faire un REBOOT maintenant? (o/N) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[OoYy]$ ]]; then
-        echo "Splunk configuré pour démarrer automatiquement..."
-        /opt/splunk/bin/splunk enable boot-start -user splunk --accept-license --answer-yes
-        echo ""
-        echo "REBOOT dans 5 secondes..."
-        sleep 5
-        reboot
-    fi
-fi
+DASHBOARD_XML='<form version="1.1">
+  <label>🔍 Dashboard de Sécurité - Exercice : Qu'\''est-ce qui manque ?</label>
+  <description>⚠️ Ce dashboard semble fonctionnel mais manque d'\''informations CRITIQUES</description>
+  
+  <fieldset submitButton="false">
+    <input type="time" token="time_token">
+      <label>Période</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
 
+  <row>
+    <panel>
+      <title>📊 Événements de sécurité</title>
+      <single>
+        <search>
+          <query>index=windows source="WinEventLog:Security" | stats count</query>
+        </search>
+      </single>
+    </panel>
+    
+    <panel>
+      <title>✅ Connexions réussies</title>
+      <single>
+        <search>
+          <query>index=windows source="WinEventLog:Security" EventCode=4624 | stats count</query>
+        </search>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>👥 Top utilisateurs</title>
+      <table>
+        <search>
+          <query>index=windows EventCode=4624 | rex field=_raw "Account Name:\s+(?&lt;user&gt;\S+)" | stats count by user | sort -count | head 5</query>
+        </search>
+      </table>
+    </panel>
+    
+    <panel>
+      <title>💻 Serveurs actifs</title>
+      <table>
+        <search>
+          <query>index=* | stats count by host | sort -count</query>
+        </search>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <html>
+        <div style="background-color: #fff3cd; padding: 15px;">
+          <h3>⚠️ DASHBOARD INCOMPLET</h3>
+          <p><b>Mission :</b> Identifiez ce qui manque !</p>
+          <ul>
+            <li>❌ Échecs d'\''authentification (EventCode 4625)</li>
+            <li>❌ Escalade de privilèges</li>
+            <li>❌ Trafic firewall bloqué</li>
+            <li>❌ Port scanning</li>
+            <li>❌ Connexions anormales</li>
+            <li>❌ Alertes de sécurité</li>
+          </ul>
+        </div>
+      </html>
+    </panel>
+  </row>
+</form>'
+
+curl -k -u "admin:$ADMIN_PASS" \
+  -X POST \
+  "https://127.0.0.1:8089/servicesNS/admin/search/data/ui/views" \
+  --data-urlencode "name=incomplete_security_dashboard" \
+  --data-urlencode "eai:data=$DASHBOARD_XML" \
+  2>/dev/null
+
+curl -k -u "admin:$ADMIN_PASS" \
+  -X POST \
+  "https://127.0.0.1:8089/servicesNS/admin/search/data/ui/views/incomplete_security_dashboard/acl" \
+  -d "sharing=app" \
+  -d "perms.read=*" \
+  2>/dev/null
+
+echo "✓ Dashboard installé"
 echo ""
+
+# 5. RÉSUMÉ
+echo "[5/5] Configuration forwarders..."
+
 IP=$(hostname -I | awk '{print $1}')
-echo "═══════════════════════════"
-echo "URL: http://$IP:8000"
-echo "User: admin"
-echo "Pass: Admin123!"
-echo "═══════════════════════════"
+
+echo "✓ Port 9997 configuré pour recevoir les forwarders"
 echo ""
-echo "NOTE: Si ports pas ouverts, fais un REBOOT:"
-echo "  sudo reboot"
+echo "════════════════════════════════════════"
+echo "  ✓✓✓ RÉPARATION TERMINÉE"
+echo "════════════════════════════════════════"
+echo ""
+echo "Interface Web: http://$IP:8000"
+echo "Username: admin"
+echo "Password: $ADMIN_PASS"
+echo ""
+echo "Dashboard: http://$IP:8000/app/search/incomplete_security_dashboard"
+echo ""
+echo "════════════════════════════════════════"
+echo "CONFIGURATION FORWARDERS"
+echo "════════════════════════════════════════"
+echo ""
+echo "Sur CHAQUE Windows/Linux forwarder, édite outputs.conf:"
+echo ""
+echo "[tcpout]"
+echo "defaultGroup = indexer"
+echo ""
+echo "[tcpout:indexer]"
+echo "server = $IP:9997"
+echo ""
+echo "Puis redémarre le forwarder:"
+echo "Windows: Restart-Service SplunkForwarder"
+echo "Linux: sudo /opt/splunkforwarder/bin/splunk restart"
+echo ""
+echo "Vérifier connexions:"
+echo "sudo netstat -an | grep 9997"
+echo ""

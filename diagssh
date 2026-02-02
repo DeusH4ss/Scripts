@@ -1,0 +1,114 @@
+#!/bin/bash
+
+echo "═══════════════════════════════════════"
+echo "  DIAGNOSTIC SSH - Mail Server"
+echo "═══════════════════════════════════════"
+echo ""
+
+# 1. Vérifier utilisateurs
+echo "[1] UTILISATEURS"
+echo "────────────────────────────────────────"
+for user in root pierre guillaume admin; do
+    if id "$user" &>/dev/null 2>&1; then
+        echo "✓ $user existe"
+        
+        # Vérifier si le mot de passe est configuré
+        passwd_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+        if [ "$passwd_status" = "P" ]; then
+            echo "  → Mot de passe: CONFIGURÉ"
+        elif [ "$passwd_status" = "L" ]; then
+            echo "  → Mot de passe: VERROUILLÉ ⚠️"
+        elif [ "$passwd_status" = "NP" ]; then
+            echo "  → Mot de passe: VIDE ⚠️"
+        fi
+        
+        # Vérifier le shell
+        shell=$(grep "^$user:" /etc/passwd | cut -d: -f7)
+        echo "  → Shell: $shell"
+        
+        # Vérifier le home
+        home=$(grep "^$user:" /etc/passwd | cut -d: -f6)
+        if [ -d "$home" ]; then
+            echo "  → Home: $home (existe)"
+        else
+            echo "  → Home: $home (MANQUANT) ⚠️"
+        fi
+    else
+        echo "✗ $user N'EXISTE PAS ⚠️"
+    fi
+    echo ""
+done
+
+# 2. Configuration SSH
+echo "[2] CONFIGURATION SSH"
+echo "────────────────────────────────────────"
+grep -E "^(PasswordAuthentication|PermitRootLogin|UsePAM)" /etc/ssh/sshd_config | while read line; do
+    echo "  $line"
+done
+echo ""
+
+# 3. Service SSH
+echo "[3] SERVICE SSH"
+echo "────────────────────────────────────────"
+if systemctl is-active --quiet ssh; then
+    echo "✓ SSH actif"
+else
+    echo "✗ SSH INACTIF ⚠️"
+fi
+
+if netstat -tuln 2>/dev/null | grep -q ":22 " || ss -tuln 2>/dev/null | grep -q ":22 "; then
+    echo "✓ Port 22 en écoute"
+else
+    echo "✗ Port 22 pas détecté ⚠️"
+fi
+echo ""
+
+# 4. Logs récents
+echo "[4] LOGS RÉCENTS (dernières tentatives)"
+echo "────────────────────────────────────────"
+tail -20 /var/log/auth.log | grep -i "ssh\|pam" | tail -10
+echo ""
+
+# 5. Test mot de passe pierre
+echo "[5] TEST MOT DE PASSE"
+echo "────────────────────────────────────────"
+echo "Test du hash du mot de passe pierre..."
+
+# Extraire le hash
+if [ -f /etc/shadow ]; then
+    pierre_hash=$(sudo grep "^pierre:" /etc/shadow | cut -d: -f2)
+    if [ -n "$pierre_hash" ] && [ "$pierre_hash" != "!" ] && [ "$pierre_hash" != "*" ]; then
+        echo "✓ Hash présent pour pierre"
+        echo "  Premier caractère: ${pierre_hash:0:3}"
+    else
+        echo "✗ Pas de hash pour pierre ⚠️"
+    fi
+fi
+echo ""
+
+# 6. PAM configuration
+echo "[6] CONFIGURATION PAM"
+echo "────────────────────────────────────────"
+if [ -f /etc/pam.d/sshd ]; then
+    echo "✓ /etc/pam.d/sshd existe"
+    grep -v "^#" /etc/pam.d/sshd | grep -v "^$" | head -5
+else
+    echo "✗ /etc/pam.d/sshd MANQUANT ⚠️"
+fi
+echo ""
+
+# 7. Solution rapide
+echo "═══════════════════════════════════════"
+echo "  SOLUTION RAPIDE"
+echo "═══════════════════════════════════════"
+echo ""
+echo "Si les utilisateurs existent mais pas de hash:"
+echo ""
+echo "  echo 'pierre:pierre123' | sudo chpasswd"
+echo "  echo 'guillaume:123' | sudo chpasswd"
+echo "  echo 'admin:admin' | sudo chpasswd"
+echo "  echo 'root:toor' | sudo chpasswd"
+echo ""
+echo "Puis redémarrer SSH:"
+echo "  sudo systemctl restart ssh"
+echo ""

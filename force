@@ -1,0 +1,93 @@
+#!/bin/bash
+
+##############################################
+# CONFIGURATION SSH - FORCER MOTS DE PASSE
+# Désactive l'authentification par clé si nécessaire
+##############################################
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}════════════════════════════════════════${NC}"
+echo -e "${BLUE}  CONFIG SSH - FORCER MOTS DE PASSE${NC}"
+echo -e "${BLUE}════════════════════════════════════════${NC}"
+echo ""
+
+if [ "$EUID" -ne 0 ]; then 
+    echo -e "${RED}❌ Exécuter en root: sudo bash $0${NC}"
+    exit 1
+fi
+
+echo -e "${YELLOW}[1] Backup de la configuration${NC}"
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.force.$(date +%s)
+echo "  ✓ Backup créé"
+echo ""
+
+echo -e "${YELLOW}[2] Configuration SSH pour FORCER mots de passe${NC}"
+echo "──────────────────────────────────────────"
+
+# Supprimer les anciennes lignes si elles existent
+sed -i '/^PasswordAuthentication/d' /etc/ssh/sshd_config
+sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config
+sed -i '/^UsePAM/d' /etc/ssh/sshd_config
+sed -i '/^ChallengeResponseAuthentication/d' /etc/ssh/sshd_config
+sed -i '/^KbdInteractiveAuthentication/d' /etc/ssh/sshd_config
+
+# Ajouter les bonnes configurations à la fin
+cat >> /etc/ssh/sshd_config <<'EOF'
+
+# Configuration pour LAB PENTEST - Authentification par mot de passe
+PasswordAuthentication yes
+PermitRootLogin yes
+UsePAM yes
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+EOF
+
+echo "  ✓ PasswordAuthentication yes"
+echo "  ✓ PermitRootLogin yes"
+echo "  ✓ UsePAM yes"
+echo "  ✓ ChallengeResponseAuthentication no"
+echo "  ✓ KbdInteractiveAuthentication no"
+echo ""
+
+echo -e "${YELLOW}[3] Test de syntaxe sshd_config${NC}"
+if sshd -t 2>&1; then
+    echo -e "  ${GREEN}✓ Configuration SSH valide${NC}"
+else
+    echo -e "  ${RED}✗ ERREUR dans la configuration${NC}"
+    sshd -t 2>&1
+    echo ""
+    echo "Restauration du backup..."
+    mv /etc/ssh/sshd_config.backup.force.* /etc/ssh/sshd_config 2>/dev/null
+    exit 1
+fi
+echo ""
+
+echo -e "${YELLOW}[4] Redémarrage SSH${NC}"
+systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+sleep 2
+
+if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
+    echo -e "  ${GREEN}✓ SSH redémarré${NC}"
+else
+    echo -e "  ${RED}✗ Échec redémarrage${NC}"
+    exit 1
+fi
+echo ""
+
+echo -e "${YELLOW}[5] Vérification configuration appliquée${NC}"
+echo "──────────────────────────────────────────"
+sshd -T | grep -E "passwordauthentication|permitrootlogin|usepam|challengeresponse|kbdinteractive"
+echo ""
+
+echo -e "${GREEN}════════════════════════════════════════${NC}"
+echo -e "${GREEN}  ✓ CONFIGURATION TERMINÉE${NC}"
+echo -e "${GREEN}════════════════════════════════════════${NC}"
+echo ""
+echo "Maintenant lance le script de test:"
+echo "  bash ssh-test-password.sh"
+echo ""

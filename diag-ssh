@@ -1,0 +1,381 @@
+#!/bin/bash
+
+##############################################
+# DIAGNOSTIC ULTRA-DÉTAILLÉ SSH
+# Vérifie TOUT ce qui peut bloquer SSH
+##############################################
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}════════════════════════════════════════${NC}"
+echo -e "${BLUE}  DIAGNOSTIC ULTRA-DÉTAILLÉ SSH${NC}"
+echo -e "${BLUE}════════════════════════════════════════${NC}"
+echo ""
+
+if [ "$EUID" -ne 0 ]; then 
+    echo -e "${RED}❌ Exécuter en root: sudo bash $0${NC}"
+    exit 1
+fi
+
+IP=$(hostname -I | awk '{print $1}')
+
+# ══════════════════════════════════════════
+# 1. PROCESSUS SSH
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[1] PROCESSUS SSH${NC}"
+echo "────────────────────────────────────────"
+
+if pgrep -x sshd > /dev/null; then
+    echo -e "${GREEN}✓ sshd est en cours d'exécution${NC}"
+    ps aux | grep "[s]shd" | head -3
+else
+    echo -e "${RED}✗ sshd N'EST PAS en cours d'exécution${NC}"
+    echo "  Solution: systemctl start ssh"
+fi
+echo ""
+
+# ══════════════════════════════════════════
+# 2. PORTS ET RÉSEAU
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[2] PORTS ET RÉSEAU${NC}"
+echo "────────────────────────────────────────"
+
+echo "Écoute sur le port 22:"
+if ss -tln 2>/dev/null | grep -q ":22"; then
+    ss -tln | grep ":22"
+    echo -e "${GREEN}✓ SSH écoute sur le port 22${NC}"
+elif netstat -tln 2>/dev/null | grep -q ":22"; then
+    netstat -tln | grep ":22"
+    echo -e "${GREEN}✓ SSH écoute sur le port 22${NC}"
+else
+    echo -e "${RED}✗ Port 22 PAS en écoute${NC}"
+fi
+echo ""
+
+echo "IP du serveur:"
+echo "  $IP"
+echo ""
+
+# ══════════════════════════════════════════
+# 3. FIREWALL
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[3] FIREWALL${NC}"
+echo "────────────────────────────────────────"
+
+# UFW
+if command -v ufw &> /dev/null; then
+    ufw_status=$(ufw status 2>/dev/null | head -1)
+    echo "UFW: $ufw_status"
+    if echo "$ufw_status" | grep -q "active"; then
+        if ufw status | grep -q "22.*ALLOW"; then
+            echo -e "${GREEN}✓ UFW autorise SSH${NC}"
+        else
+            echo -e "${RED}✗ UFW BLOQUE SSH${NC}"
+            echo "  Solution: ufw allow 22/tcp"
+        fi
+    else
+        echo -e "${GREEN}✓ UFW inactif${NC}"
+    fi
+else
+    echo "UFW: non installé"
+fi
+
+# iptables
+if command -v iptables &> /dev/null; then
+    iptables_rules=$(iptables -L -n 2>/dev/null | wc -l)
+    if [ "$iptables_rules" -gt 8 ]; then
+        echo "iptables: $iptables_rules règles actives"
+        if iptables -L INPUT -n | grep -q "22.*ACCEPT"; then
+            echo -e "${GREEN}✓ iptables autorise SSH${NC}"
+        else
+            echo -e "${YELLOW}⚠ Vérifier les règles iptables${NC}"
+            iptables -L INPUT -n | grep -E "tcp.*22|dpt:22"
+        fi
+    else
+        echo -e "${GREEN}✓ iptables minimal${NC}"
+    fi
+fi
+echo ""
+
+# ══════════════════════════════════════════
+# 4. CONFIGURATION SSHD DÉTAILLÉE
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[4] CONFIGURATION SSHD DÉTAILLÉE${NC}"
+echo "────────────────────────────────────────"
+
+echo "Fichier: /etc/ssh/sshd_config"
+echo ""
+
+# Port
+port=$(grep "^Port" /etc/ssh/sshd_config 2>/dev/null)
+if [ -z "$port" ]; then
+    echo -e "${GREEN}✓ Port: 22 (défaut)${NC}"
+else
+    echo "  $port"
+fi
+
+# PasswordAuthentication
+pass_auth=$(grep "^PasswordAuthentication" /etc/ssh/sshd_config 2>/dev/null)
+if echo "$pass_auth" | grep -q "yes"; then
+    echo -e "${GREEN}✓ PasswordAuthentication yes${NC}"
+else
+    echo -e "${RED}✗ PasswordAuthentication: $pass_auth${NC}"
+    echo -e "${RED}  PROBLÈME: Auth par mot de passe désactivée${NC}"
+fi
+
+# PermitRootLogin
+root_login=$(grep "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null)
+if echo "$root_login" | grep -q "yes"; then
+    echo -e "${GREEN}✓ PermitRootLogin yes${NC}"
+else
+    echo -e "${YELLOW}⚠ PermitRootLogin: $root_login${NC}"
+fi
+
+# UsePAM
+use_pam=$(grep "^UsePAM" /etc/ssh/sshd_config 2>/dev/null)
+if echo "$use_pam" | grep -q "yes"; then
+    echo -e "${GREEN}✓ UsePAM yes${NC}"
+else
+    echo -e "${RED}✗ UsePAM: $use_pam${NC}"
+fi
+
+# ChallengeResponseAuthentication
+challenge=$(grep "^ChallengeResponseAuthentication" /etc/ssh/sshd_config 2>/dev/null)
+if echo "$challenge" | grep -q "no"; then
+    echo -e "${GREEN}✓ ChallengeResponseAuthentication no${NC}"
+elif [ -z "$challenge" ]; then
+    echo -e "${GREEN}✓ ChallengeResponseAuthentication (défaut: no)${NC}"
+else
+    echo "  ChallengeResponseAuthentication: $challenge"
+fi
+
+echo ""
+
+# Test de syntaxe sshd_config
+echo "Test syntaxe configuration:"
+if sshd -t 2>&1; then
+    echo -e "${GREEN}✓ Configuration SSH valide${NC}"
+else
+    echo -e "${RED}✗ ERREUR dans la configuration${NC}"
+    sshd -t 2>&1
+fi
+
+echo ""
+
+# ══════════════════════════════════════════
+# 5. UTILISATEURS ET MOTS DE PASSE
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[5] UTILISATEURS ET MOTS DE PASSE${NC}"
+echo "────────────────────────────────────────"
+
+declare -A USERS
+USERS[root]="toor"
+USERS[pierre]="pierre123"
+USERS[guillaume]="123"
+USERS[admin]="admin"
+
+for user in "${!USERS[@]}"; do
+    echo "[$user]"
+    
+    # Existe?
+    if id "$user" &>/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ Existe${NC}"
+    else
+        echo -e "  ${RED}✗ N'existe PAS${NC}"
+        continue
+    fi
+    
+    # Mot de passe?
+    if [ "$user" = "root" ]; then
+        # Pour root, vérifier dans shadow
+        if grep "^root:" /etc/shadow | grep -q ':\$'; then
+            echo -e "  ${GREEN}✓ Mot de passe configuré${NC}"
+        else
+            echo -e "  ${RED}✗ Pas de mot de passe${NC}"
+        fi
+    else
+        passwd_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+        case "$passwd_status" in
+            "P")
+                echo -e "  ${GREEN}✓ Mot de passe configuré${NC}"
+                ;;
+            "L")
+                echo -e "  ${RED}✗ Compte VERROUILLÉ${NC}"
+                echo "    Solution: passwd -u $user"
+                ;;
+            "NP")
+                echo -e "  ${RED}✗ PAS de mot de passe${NC}"
+                echo "    Solution: echo '$user:${USERS[$user]}' | chpasswd"
+                ;;
+            *)
+                echo -e "  ${YELLOW}⚠ Statut: $passwd_status${NC}"
+                ;;
+        esac
+    fi
+    
+    # Shell
+    user_shell=$(grep "^$user:" /etc/passwd | cut -d: -f7)
+    if [ "$user_shell" = "/bin/bash" ] || [ "$user_shell" = "/bin/sh" ]; then
+        echo -e "  ${GREEN}✓ Shell: $user_shell${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ Shell: $user_shell${NC}"
+    fi
+    
+    # Home
+    if [ "$user" != "root" ]; then
+        user_home=$(grep "^$user:" /etc/passwd | cut -d: -f6)
+        if [ -d "$user_home" ]; then
+            echo -e "  ${GREEN}✓ Home: $user_home${NC}"
+        else
+            echo -e "  ${RED}✗ Home manquant: $user_home${NC}"
+        fi
+    fi
+    
+    echo ""
+done
+
+# ══════════════════════════════════════════
+# 6. PAM DÉTAILLÉ
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[6] PAM (Pluggable Authentication Modules)${NC}"
+echo "────────────────────────────────────────"
+
+echo "/etc/pam.d/sshd:"
+if [ -f /etc/pam.d/sshd ]; then
+    echo -e "${GREEN}✓ Existe${NC}"
+    echo ""
+    echo "Contenu (sans commentaires):"
+    grep -v "^#" /etc/pam.d/sshd | grep -v "^$" | head -10
+else
+    echo -e "${RED}✗ MANQUANT${NC}"
+fi
+echo ""
+
+echo "/etc/pam.d/common-auth:"
+if [ -f /etc/pam.d/common-auth ]; then
+    echo -e "${GREEN}✓ Existe${NC}"
+    echo ""
+    echo "Contenu (actif):"
+    grep -v "^#" /etc/pam.d/common-auth | grep -v "^$"
+    echo ""
+    
+    # Vérifier pam_sss
+    if grep -q "^auth.*pam_sss.so" /etc/pam.d/common-auth; then
+        echo -e "${RED}⚠⚠⚠ pam_sss.so EST ACTIF (PROBLÈME!)${NC}"
+        echo "  SSSD intercepte l'authentification"
+        echo "  Solution: sed -i 's/^auth.*pam_sss.so/#&/' /etc/pam.d/common-auth"
+    else
+        echo -e "${GREEN}✓ pam_sss.so non actif${NC}"
+    fi
+    
+    # Vérifier pam_unix
+    if grep -q "pam_unix.so" /etc/pam.d/common-auth; then
+        echo -e "${GREEN}✓ pam_unix.so présent${NC}"
+    else
+        echo -e "${RED}✗ pam_unix.so MANQUANT${NC}"
+    fi
+else
+    echo -e "${RED}✗ MANQUANT${NC}"
+fi
+echo ""
+
+# ══════════════════════════════════════════
+# 7. SSSD
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[7] SSSD (System Security Services Daemon)${NC}"
+echo "────────────────────────────────────────"
+
+if systemctl is-active --quiet sssd 2>/dev/null; then
+    echo -e "${RED}✗✗✗ SSSD EST ACTIF (PROBLÈME MAJEUR!)${NC}"
+    echo "  SSSD intercepte toutes les authentifications"
+    echo "  Solution:"
+    echo "    systemctl stop sssd"
+    echo "    systemctl disable sssd"
+elif systemctl is-enabled --quiet sssd 2>/dev/null; then
+    echo -e "${YELLOW}⚠ SSSD configuré mais inactif${NC}"
+    echo "  Solution: systemctl disable sssd"
+else
+    echo -e "${GREEN}✓ SSSD inactif${NC}"
+fi
+echo ""
+
+# ══════════════════════════════════════════
+# 8. LOGS RÉCENTS
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[8] LOGS RÉCENTS (10 dernières lignes)${NC}"
+echo "────────────────────────────────────────"
+tail -10 /var/log/auth.log | grep -E "sshd|pam"
+echo ""
+
+# ══════════════════════════════════════════
+# 9. TEST DE CONNEXION LOCAL
+# ══════════════════════════════════════════
+echo -e "${YELLOW}[9] TEST CONNEXION LOCAL${NC}"
+echo "────────────────────────────────────────"
+
+# Installer sshpass si nécessaire
+if ! command -v sshpass &> /dev/null; then
+    echo "Installation sshpass..."
+    apt install -y sshpass -qq 2>/dev/null
+fi
+
+if command -v sshpass &> /dev/null; then
+    echo "Test: pierre@localhost..."
+    
+    # Nettoyer known_hosts
+    ssh-keygen -R localhost 2>/dev/null > /dev/null
+    
+    # Test avec timeout
+    if timeout 5 sshpass -p "pierre123" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null pierre@localhost "echo 'SSH OK'" 2>&1 | grep -q "SSH OK"; then
+        echo -e "${GREEN}✓✓✓ CONNEXION SSH FONCTIONNE!${NC}"
+        echo "  Le problème vient peut-être du réseau ou du client"
+    else
+        echo -e "${RED}✗✗✗ CONNEXION SSH ÉCHOUE${NC}"
+        echo ""
+        echo "Détail de l'erreur:"
+        timeout 5 sshpass -p "pierre123" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null pierre@localhost "echo OK" 2>&1 | head -5
+    fi
+else
+    echo "sshpass non disponible - test manuel"
+    echo "  Commande: ssh pierre@localhost"
+fi
+echo ""
+
+# ══════════════════════════════════════════
+# RÉSUMÉ ET SOLUTIONS
+# ══════════════════════════════════════════
+
+echo -e "${BLUE}════════════════════════════════════════${NC}"
+echo -e "${BLUE}  RÉSUMÉ ET SOLUTIONS${NC}"
+echo -e "${BLUE}════════════════════════════════════════${NC}"
+echo ""
+
+echo -e "${YELLOW}📋 CHECKLIST RAPIDE:${NC}"
+echo ""
+echo "1. Vérifier que SSSD est ARRÊTÉ:"
+echo "   systemctl stop sssd && systemctl disable sssd"
+echo ""
+echo "2. Vérifier pam_sss est DÉSACTIVÉ:"
+echo "   sed -i 's/^auth.*pam_sss.so/#&/' /etc/pam.d/common-auth"
+echo ""
+echo "3. Reconfigurer les mots de passe:"
+echo "   echo 'pierre:pierre123' | chpasswd"
+echo "   echo 'guillaume:123' | chpasswd"
+echo ""
+echo "4. Forcer PasswordAuthentication:"
+echo "   sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config"
+echo ""
+echo "5. Redémarrer SSH:"
+echo "   systemctl restart ssh"
+echo ""
+echo -e "${YELLOW}🔧 TEST DEPUIS KALI:${NC}"
+echo "   ssh pierre@$IP"
+echo "   Password: pierre123"
+echo ""
+echo -e "${YELLOW}📊 MONITORING EN TEMPS RÉEL:${NC}"
+echo "   tail -f /var/log/auth.log | grep sshd"
+echo ""

@@ -1,299 +1,392 @@
 #!/bin/bash
 
 ##############################################
-# SSH VOLONTAIREMENT VULNÉRABLE - VERSION 2
+# DIAGNOSTIC ET RÉPARATION SSH
 # Lab Iron4Software - Mail Server
-# ⚠️ ENVIRONNEMENT DE TEST UNIQUEMENT ⚠️
+# Version automatique
 ##############################################
 
-echo "════════════════════════════════════════"
-echo "  SSH VULNÉRABLE - Lab Iron4Software V2"
-echo "════════════════════════════════════════"
-echo ""
-echo "⚠️  Configuration NON SÉCURISÉE - Lab uniquement"
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+PROBLEMS_FOUND=0
+
+echo -e "${BLUE}════════════════════════════════════════${NC}"
+echo -e "${BLUE}  DIAGNOSTIC & RÉPARATION SSH${NC}"
+echo -e "${BLUE}  Lab Iron4Software - Mail Server${NC}"
+echo -e "${BLUE}════════════════════════════════════════${NC}"
 echo ""
 
 # Vérifier root
 if [ "$EUID" -ne 0 ]; then 
-    echo "❌ Exécuter en root: sudo bash $0"
+    echo -e "${RED}❌ Exécuter en root: sudo bash $0${NC}"
     exit 1
 fi
 
-# ══════════════════════════════════════════
-# 1. INSTALLATION SSH
-# ══════════════════════════════════════════
-echo "[1/5] Installation SSH..."
-
-apt update -qq
-apt install -y openssh-server
-
-systemctl enable ssh
-systemctl start ssh
-
-echo "✓ SSH installé"
-echo ""
-
-# ══════════════════════════════════════════
-# 2. CONFIGURATION VULNÉRABLE
-# ══════════════════════════════════════════
-echo "[2/5] Configuration volontairement vulnérable..."
-
-# Backup
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%s)
-
-# Config ultra-permissive
-cat > /etc/ssh/sshd_config <<'EOF'
-# SSH VULNÉRABLE - Lab Iron4Software
-
-Port 22
-Protocol 2
-
-# Authentification VULNÉRABLE
-PermitRootLogin yes
-PasswordAuthentication yes
-PermitEmptyPasswords no
-PubkeyAuthentication yes
-ChallengeResponseAuthentication no
-UsePAM yes
-
-# Aucune limite d'essais (brute-force possible)
-MaxAuthTries 999
-MaxSessions 50
-LoginGraceTime 120
-
-# Logs verbeux (pour analyse après attaque)
-SyslogFacility AUTH
-LogLevel VERBOSE
-
-# Forwarding activé
-X11Forwarding yes
-AllowTcpForwarding yes
-AllowAgentForwarding yes
-
-# Pas de keepalive timeout (connexions longues possibles)
-ClientAliveInterval 0
-ClientAliveCountMax 3
-
-# Banner lab
-Banner /etc/ssh/banner-lab
-
-# Accepter tous les environnements
-AcceptEnv LANG LC_*
-
-# Subsystèmes
-Subsystem sftp /usr/lib/openssh/sftp-server
-EOF
-
-# Banner lab
-cat > /etc/ssh/banner-lab <<'EOF'
-═══════════════════════════════════════
-   LAB IRON4SOFTWARE - MAIL SERVER
-   
-   ⚠️  Configuration de test
-   ⚠️  Environnement vulnérable
-═══════════════════════════════════════
-EOF
-
-chmod 644 /etc/ssh/banner-lab
-
-echo "✓ Config SSH vulnérable appliquée"
-echo ""
-
-# ══════════════════════════════════════════
-# 3. GESTION UTILISATEURS INTELLIGENTE
-# ══════════════════════════════════════════
-echo "[3/5] Gestion des utilisateurs..."
-
-# Définir utilisateurs et mots de passe
+# Utilisateurs à configurer
 declare -A USERS
 USERS[root]="toor"
 USERS[pierre]="pierre123"
 USERS[guillaume]="123"
 USERS[admin]="admin"
 
-echo ""
-echo "→ Détection des utilisateurs existants"
+# ══════════════════════════════════════════
+# PHASE 1: DIAGNOSTIC
+# ══════════════════════════════════════════
 
-# Traiter chaque utilisateur
+echo -e "${YELLOW}[PHASE 1] DIAGNOSTIC${NC}"
+echo "────────────────────────────────────────"
+echo ""
+
+# 1.1 Vérifier SSSD
+echo -e "${BLUE}[1.1] Vérification SSSD...${NC}"
+if systemctl is-active --quiet sssd 2>/dev/null; then
+    echo -e "${RED}⚠ SSSD est ACTIF - PROBLÈME DÉTECTÉ!${NC}"
+    echo "  SSSD intercepte l'authentification avant PAM"
+    PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+    SSSD_ACTIVE=1
+else
+    echo -e "${GREEN}✓ SSSD inactif ou absent${NC}"
+    SSSD_ACTIVE=0
+fi
+echo ""
+
+# 1.2 Vérifier utilisateurs
+echo -e "${BLUE}[1.2] Vérification utilisateurs...${NC}"
+USERS_OK=1
+for user in "${!USERS[@]}"; do
+    if [ "$user" != "root" ]; then
+        if ! id "$user" &>/dev/null 2>&1; then
+            echo -e "${RED}✗ $user n'existe pas${NC}"
+            PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+            USERS_OK=0
+        else
+            # Vérifier le mot de passe
+            passwd_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+            if [ "$passwd_status" = "P" ]; then
+                echo -e "${GREEN}✓ $user existe avec mot de passe${NC}"
+            else
+                echo -e "${YELLOW}⚠ $user existe mais pas de mot de passe valide${NC}"
+                PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+                USERS_OK=0
+            fi
+        fi
+    fi
+done
+echo ""
+
+# 1.3 Vérifier configuration SSH
+echo -e "${BLUE}[1.3] Configuration SSH...${NC}"
+SSH_OK=1
+
+# PasswordAuthentication
+if grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config; then
+    echo -e "${GREEN}✓ PasswordAuthentication yes${NC}"
+else
+    echo -e "${RED}✗ PasswordAuthentication non activé${NC}"
+    PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+    SSH_OK=0
+fi
+
+# PermitRootLogin
+if grep -q "^PermitRootLogin yes" /etc/ssh/sshd_config; then
+    echo -e "${GREEN}✓ PermitRootLogin yes${NC}"
+else
+    echo -e "${YELLOW}⚠ PermitRootLogin non activé${NC}"
+    PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+    SSH_OK=0
+fi
+
+# UsePAM
+if grep -q "^UsePAM yes" /etc/ssh/sshd_config; then
+    echo -e "${GREEN}✓ UsePAM yes${NC}"
+else
+    echo -e "${RED}✗ UsePAM non activé${NC}"
+    PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+    SSH_OK=0
+fi
+echo ""
+
+# 1.4 Vérifier PAM
+echo -e "${BLUE}[1.4] Configuration PAM...${NC}"
+PAM_OK=1
+
+if [ -f /etc/pam.d/sshd ]; then
+    echo -e "${GREEN}✓ /etc/pam.d/sshd existe${NC}"
+    
+    # Vérifier pam_sss (SSSD)
+    if grep -q "^auth.*pam_sss.so" /etc/pam.d/common-auth 2>/dev/null; then
+        echo -e "${RED}⚠ pam_sss.so actif (SSSD intercepte l'auth)${NC}"
+        PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+        PAM_OK=0
+    fi
+    
+    # Vérifier pam_unix
+    if grep -q "pam_unix.so" /etc/pam.d/common-auth 2>/dev/null; then
+        echo -e "${GREEN}✓ pam_unix.so présent${NC}"
+    else
+        echo -e "${RED}✗ pam_unix.so manquant${NC}"
+        PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+        PAM_OK=0
+    fi
+else
+    echo -e "${RED}✗ /etc/pam.d/sshd manquant${NC}"
+    PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+    PAM_OK=0
+fi
+echo ""
+
+# 1.5 Vérifier service SSH
+echo -e "${BLUE}[1.5] Service SSH...${NC}"
+if systemctl is-active --quiet ssh; then
+    echo -e "${GREEN}✓ SSH actif${NC}"
+else
+    echo -e "${RED}✗ SSH inactif${NC}"
+    PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+fi
+
+if netstat -tuln 2>/dev/null | grep -q ":22 " || ss -tuln 2>/dev/null | grep -q ":22 "; then
+    echo -e "${GREEN}✓ Port 22 en écoute${NC}"
+else
+    echo -e "${RED}✗ Port 22 pas détecté${NC}"
+    PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+fi
+echo ""
+
+# 1.6 Logs récents
+echo -e "${BLUE}[1.6] Logs récents (dernières erreurs)...${NC}"
+if tail -50 /var/log/auth.log 2>/dev/null | grep -i "pam_sss" | tail -3 | grep -q "pam_sss"; then
+    echo -e "${RED}⚠ Erreurs pam_sss détectées dans les logs${NC}"
+    tail -50 /var/log/auth.log | grep "pam_sss" | tail -2
+    PROBLEMS_FOUND=$((PROBLEMS_FOUND + 1))
+else
+    echo -e "${GREEN}✓ Pas d'erreur pam_sss récente${NC}"
+fi
+echo ""
+
+# ══════════════════════════════════════════
+# RÉSUMÉ DIAGNOSTIC
+# ══════════════════════════════════════════
+
+echo -e "${YELLOW}════════════════════════════════════════${NC}"
+echo -e "${YELLOW}  RÉSUMÉ DIAGNOSTIC${NC}"
+echo -e "${YELLOW}════════════════════════════════════════${NC}"
+echo ""
+
+if [ $PROBLEMS_FOUND -eq 0 ]; then
+    echo -e "${GREEN}✓ Aucun problème détecté${NC}"
+    echo ""
+    echo "Le système semble correctement configuré."
+    echo "Si SSH ne fonctionne toujours pas, vérifier:"
+    echo "  - Firewall (iptables, ufw)"
+    echo "  - Connexion réseau"
+    echo "  - Tentative depuis le bon client"
+    exit 0
+else
+    echo -e "${RED}✗ $PROBLEMS_FOUND problème(s) détecté(s)${NC}"
+    echo ""
+fi
+
+# ══════════════════════════════════════════
+# PHASE 2: RÉPARATION
+# ══════════════════════════════════════════
+
+echo -e "${YELLOW}[PHASE 2] RÉPARATION AUTOMATIQUE${NC}"
+echo "────────────────────────────────────────"
+echo ""
+
+read -p "Lancer la réparation automatique? (O/n): " response
+response=${response:-O}
+
+if [[ ! "$response" =~ ^[OoYy]$ ]]; then
+    echo "Réparation annulée."
+    exit 0
+fi
+
+echo ""
+
+# 2.1 Désactiver SSSD
+if [ $SSSD_ACTIVE -eq 1 ]; then
+    echo -e "${BLUE}[2.1] Désactivation SSSD...${NC}"
+    systemctl stop sssd 2>/dev/null
+    systemctl disable sssd 2>/dev/null
+    echo -e "${GREEN}✓ SSSD stoppé et désactivé${NC}"
+    echo ""
+fi
+
+# 2.2 Créer/Configurer utilisateurs
+echo -e "${BLUE}[2.2] Configuration utilisateurs...${NC}"
 for user in "${!USERS[@]}"; do
     password="${USERS[$user]}"
     
-    if [ "$user" = "root" ]; then
-        echo "  [root] Utilisateur système"
-    else
-        if id "$user" &>/dev/null 2>&1; then
-            echo "  [✓] $user existe déjà"
-        else
-            echo "  [+] Création de $user..."
+    if [ "$user" != "root" ]; then
+        # Créer si n'existe pas
+        if ! id "$user" &>/dev/null 2>&1; then
             useradd -m -s /bin/bash "$user" 2>/dev/null
-            if [ $? -eq 0 ]; then
-                echo "      → Utilisateur créé"
-            else
-                echo "      → ERREUR création"
-                continue
-            fi
+            echo "  [+] $user créé"
         fi
         
-        # Vérifier le home directory
+        # Vérifier home
         if [ ! -d "/home/$user" ]; then
-            echo "      → Création home directory"
             mkdir -p "/home/$user"
             chown "$user":"$user" "/home/$user"
             chmod 755 "/home/$user"
         fi
     fi
-done
-
-echo ""
-echo "→ Configuration des mots de passe (PAM)"
-
-# Configurer tous les mots de passe
-for user in "${!USERS[@]}"; do
-    password="${USERS[$user]}"
     
-    # Chpasswd utilise PAM automatiquement
+    # Configurer mot de passe
     echo "$user:$password" | chpasswd 2>/dev/null
-    
     if [ $? -eq 0 ]; then
-        echo "  [✓] $user → '$password'"
+        echo -e "  ${GREEN}✓${NC} $user → '$password'"
     else
-        echo "  [✗] $user → ÉCHEC"
+        echo -e "  ${RED}✗${NC} Échec pour $user"
     fi
 done
-
-echo ""
-echo "→ Vérification finale des utilisateurs"
-
-for user in "${!USERS[@]}"; do
-    if [ "$user" = "root" ]; then
-        echo "  [✓] root → actif"
-    elif id "$user" &>/dev/null 2>&1; then
-        HOME_DIR=$(eval echo ~$user)
-        if [ -d "$HOME_DIR" ]; then
-            echo "  [✓] $user → actif (home: $HOME_DIR)"
-        else
-            echo "  [⚠] $user → actif (MAIS home manquant)"
-        fi
-    else
-        echo "  [✗] $user → MANQUANT!"
-    fi
-done
-
 echo ""
 
-# ══════════════════════════════════════════
-# 4. CONFIGURATION PAM
-# ══════════════════════════════════════════
-echo "[4/5] Configuration PAM..."
+# 2.3 Réparer PAM
+echo -e "${BLUE}[2.3] Réparation PAM...${NC}"
+
+# Backup PAM
+cp /etc/pam.d/common-auth /etc/pam.d/common-auth.backup.$(date +%s) 2>/dev/null
+
+# Désactiver pam_sss dans common-auth
+if grep -q "^auth.*pam_sss.so" /etc/pam.d/common-auth 2>/dev/null; then
+    sed -i 's/^auth.*pam_sss.so/#&/' /etc/pam.d/common-auth
+    echo "  [✓] pam_sss.so désactivé"
+fi
+
+if grep -q "^account.*pam_sss.so" /etc/pam.d/common-account 2>/dev/null; then
+    sed -i 's/^account.*pam_sss.so/#&/' /etc/pam.d/common-account
+    echo "  [✓] pam_sss.so désactivé (account)"
+fi
+
+# S'assurer que pam_unix est présent et actif
+if ! grep -q "^auth.*pam_unix.so" /etc/pam.d/common-auth; then
+    echo "auth    required    pam_unix.so nullok_secure" >> /etc/pam.d/common-auth
+    echo "  [✓] pam_unix.so ajouté"
+fi
 
 # Vérifier /etc/pam.d/sshd
-if [ -f /etc/pam.d/sshd ]; then
-    echo "  [✓] /etc/pam.d/sshd existe"
-    
-    # S'assurer que common-auth est inclus
-    if ! grep -q "^@include common-auth" /etc/pam.d/sshd; then
-        echo "  [+] Ajout @include common-auth"
-        sed -i '1i @include common-auth' /etc/pam.d/sshd
-    else
-        echo "  [✓] common-auth déjà inclus"
-    fi
-else
-    echo "  [⚠] /etc/pam.d/sshd manquant (création)"
+if [ ! -f /etc/pam.d/sshd ]; then
     cat > /etc/pam.d/sshd <<'PAMEOF'
 @include common-auth
 @include common-account
 @include common-session
 @include common-password
 PAMEOF
-fi
-
-# Vérifier common-auth
-if [ -f /etc/pam.d/common-auth ]; then
-    if grep -q "pam_unix.so" /etc/pam.d/common-auth; then
-        echo "  [✓] pam_unix.so actif"
-    else
-        echo "  [+] Configuration pam_unix.so"
-        echo "auth    required    pam_unix.so nullok_secure" >> /etc/pam.d/common-auth
-    fi
+    echo "  [✓] /etc/pam.d/sshd créé"
 else
-    echo "  [!] /etc/pam.d/common-auth manquant - système non-standard"
+    echo "  [✓] /etc/pam.d/sshd OK"
 fi
 
 echo ""
 
-# ══════════════════════════════════════════
-# 5. DÉSACTIVATION PROTECTIONS
-# ══════════════════════════════════════════
-echo "[5/5] Désactivation protections..."
+# 2.4 Réparer configuration SSH
+echo -e "${BLUE}[2.4] Réparation configuration SSH...${NC}"
 
-# Fail2Ban
-if systemctl is-active --quiet fail2ban 2>/dev/null; then
-    systemctl stop fail2ban
-    systemctl disable fail2ban
-    echo "  [✓] Fail2Ban désactivé"
-else
-    echo "  [·] Fail2Ban non installé"
-fi
+# Backup
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%s)
 
-# Firewall UFW
-if command -v ufw &> /dev/null; then
-    ufw disable 2>/dev/null
-    echo "  [✓] UFW désactivé"
+# Forcer PasswordAuthentication yes
+if grep -q "^#*PasswordAuthentication" /etc/ssh/sshd_config; then
+    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 else
-    echo "  [·] UFW non installé"
+    echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 fi
+echo "  [✓] PasswordAuthentication yes"
+
+# Forcer PermitRootLogin yes
+if grep -q "^#*PermitRootLogin" /etc/ssh/sshd_config; then
+    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+else
+    echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+fi
+echo "  [✓] PermitRootLogin yes"
+
+# Forcer UsePAM yes
+if grep -q "^#*UsePAM" /etc/ssh/sshd_config; then
+    sed -i 's/^#*UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
+else
+    echo "UsePAM yes" >> /etc/ssh/sshd_config
+fi
+echo "  [✓] UsePAM yes"
+
+# S'assurer que ChallengeResponseAuthentication est à no
+if grep -q "^#*ChallengeResponseAuthentication" /etc/ssh/sshd_config; then
+    sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+else
+    echo "ChallengeResponseAuthentication no" >> /etc/ssh/sshd_config
+fi
+echo "  [✓] ChallengeResponseAuthentication no"
 
 echo ""
 
-# ══════════════════════════════════════════
-# REDÉMARRAGE SSH
-# ══════════════════════════════════════════
-echo "→ Redémarrage SSH..."
-
+# 2.5 Redémarrer SSH
+echo -e "${BLUE}[2.5] Redémarrage SSH...${NC}"
 systemctl restart ssh
 
 sleep 2
 
 if systemctl is-active --quiet ssh; then
-    echo "  [✓] SSH actif"
-    
-    # Vérifier le port
-    if netstat -tuln 2>/dev/null | grep -q ":22 " || ss -tuln 2>/dev/null | grep -q ":22 "; then
-        echo "  [✓] Port 22 en écoute"
-    else
-        echo "  [⚠] Port 22 pas détecté"
-    fi
+    echo -e "${GREEN}✓ SSH redémarré avec succès${NC}"
 else
-    echo "  [✗] SSH INACTIF - Restauration backup"
+    echo -e "${RED}✗ Échec redémarrage SSH${NC}"
+    echo "Restauration backup..."
     mv /etc/ssh/sshd_config.backup.* /etc/ssh/sshd_config 2>/dev/null
     systemctl restart ssh
     exit 1
 fi
-
 echo ""
 
 # ══════════════════════════════════════════
-# TEST AUTOMATIQUE
+# PHASE 3: VÉRIFICATION
 # ══════════════════════════════════════════
-echo "→ Test automatique SSH local..."
 
-# Tester avec pierre
-TESTUSER="pierre"
-TESTPASS="pierre123"
+echo -e "${YELLOW}[PHASE 3] VÉRIFICATION${NC}"
+echo "────────────────────────────────────────"
+echo ""
 
-if id "$TESTUSER" &>/dev/null; then
-    # Test avec sshpass si disponible
-    if command -v sshpass &> /dev/null; then
-        if sshpass -p "$TESTPASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$TESTUSER@localhost" "echo OK" 2>/dev/null | grep -q "OK"; then
-            echo "  [✓] Test SSH pierre@localhost → SUCCÈS"
+# 3.1 Test utilisateurs
+echo -e "${BLUE}[3.1] Test utilisateurs...${NC}"
+for user in "${!USERS[@]}"; do
+    if [ "$user" != "root" ]; then
+        if id "$user" &>/dev/null 2>&1; then
+            passwd_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+            if [ "$passwd_status" = "P" ]; then
+                echo -e "${GREEN}✓${NC} $user (mot de passe OK)"
+            else
+                echo -e "${RED}✗${NC} $user (problème mot de passe)"
+            fi
         else
-            echo "  [⚠] Test SSH pierre@localhost → ÉCHEC"
+            echo -e "${RED}✗${NC} $user (n'existe pas)"
         fi
-    else
-        echo "  [·] sshpass non installé (test manuel requis)"
     fi
+done
+echo ""
+
+# 3.2 Test SSH local
+echo -e "${BLUE}[3.2] Test SSH local...${NC}"
+
+if command -v sshpass &> /dev/null; then
+    # Installer sshpass si pas présent
+    apt install -y sshpass -qq 2>/dev/null
 fi
 
+if command -v sshpass &> /dev/null; then
+    # Test avec pierre
+    if sshpass -p "pierre123" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 pierre@localhost "echo OK" 2>/dev/null | grep -q "OK"; then
+        echo -e "${GREEN}✓ Test SSH pierre@localhost → SUCCÈS${NC}"
+    else
+        echo -e "${YELLOW}⚠ Test SSH pierre@localhost → ÉCHEC${NC}"
+        echo "  Vérifier manuellement avec: ssh pierre@localhost"
+    fi
+else
+    echo -e "${YELLOW}⚠ sshpass non disponible - test manuel requis${NC}"
+fi
 echo ""
 
 # ══════════════════════════════════════════
@@ -301,77 +394,36 @@ echo ""
 # ══════════════════════════════════════════
 
 IP=$(hostname -I | awk '{print $1}')
-HOSTNAME=$(hostname -f 2>/dev/null || hostname)
 
-echo "════════════════════════════════════════"
-echo "  ✓✓✓ CONFIGURATION TERMINÉE"
-echo "════════════════════════════════════════"
+echo -e "${GREEN}════════════════════════════════════════${NC}"
+echo -e "${GREEN}  ✓ RÉPARATION TERMINÉE${NC}"
+echo -e "${GREEN}════════════════════════════════════════${NC}"
 echo ""
-echo "📡 INFORMATIONS SERVEUR"
+echo -e "${BLUE}📡 INFORMATIONS${NC}"
 echo "────────────────────────────────────────"
-echo "Hostname: $HOSTNAME"
-echo "IP:       $IP"
-echo "Port SSH: 22"
+echo "IP: $IP"
+echo "Port: 22"
 echo ""
-echo "📝 COMPTES CONFIGURÉS"
+echo -e "${BLUE}📝 COMPTES SSH${NC}"
 echo "────────────────────────────────────────"
 for user in "${!USERS[@]}"; do
-    password="${USERS[$user]}"
-    if [ "$user" = "root" ]; then
-        printf "%-12s : %-15s [SYSTÈME]\n" "$user" "$password"
-    elif id "$user" &>/dev/null 2>&1; then
-        printf "%-12s : %-15s [OK]\n" "$user" "$password"
-    else
-        printf "%-12s : %-15s [ERREUR]\n" "$user" "$password"
-    fi
+    printf "%-12s : %s\n" "$user" "${USERS[$user]}"
 done
 echo ""
-echo "⚠️  VULNÉRABILITÉS ACTIVES"
+echo -e "${BLUE}🔨 TEST DEPUIS KALI${NC}"
 echo "────────────────────────────────────────"
-echo "❌ Root login SSH activé"
-echo "❌ Mots de passe ultra-faibles"
-echo "❌ 999 tentatives max (brute-force facile)"
-echo "❌ Fail2Ban désactivé"
-echo "❌ Forwarding activé"
-echo "✓ Logs verbeux → /var/log/auth.log"
+echo "ssh pierre@$IP"
+echo "Password: pierre123"
 echo ""
-echo "🔨 TESTS D'ATTAQUE"
+echo "ssh guillaume@$IP"
+echo "Password: 123"
+echo ""
+echo "ssh root@$IP"
+echo "Password: toor"
+echo ""
+echo -e "${BLUE}📊 MONITORING${NC}"
 echo "────────────────────────────────────────"
+echo "tail -f /var/log/auth.log | grep sshd"
 echo ""
-echo "1. Connexion directe depuis Kali:"
-echo "   ssh pierre@$IP"
-echo "   Password: pierre123"
-echo ""
-echo "   ssh guillaume@$IP"
-echo "   Password: 123"
-echo ""
-echo "   ssh root@$IP"
-echo "   Password: toor"
-echo ""
-echo "2. Brute-force avec Hydra:"
-echo "   hydra -l pierre -P /usr/share/wordlists/rockyou.txt ssh://$IP"
-echo "   hydra -l guillaume -p 123 ssh://$IP"
-echo ""
-echo "3. Metasploit:"
-echo "   use auxiliary/scanner/ssh/ssh_login"
-echo "   set RHOSTS $IP"
-echo "   set USERNAME pierre"
-echo "   set PASSWORD pierre123"
-echo "   run"
-echo ""
-echo "📊 MONITORING"
-echo "────────────────────────────────────────"
-echo "Tentatives en temps réel:"
-echo "  tail -f /var/log/auth.log | grep sshd"
-echo ""
-echo "Échecs:"
-echo "  grep 'Failed password' /var/log/auth.log"
-echo ""
-echo "Succès:"
-echo "  grep 'Accepted password' /var/log/auth.log"
-echo ""
-echo "════════════════════════════════════════"
-echo ""
-echo "⚠️  Configuration vulnérable pour LAB uniquement"
-echo "    Ne JAMAIS utiliser en production!"
+echo -e "${YELLOW}⚠️  Lab vulnérable - Réseau isolé uniquement${NC}"
 echo ""

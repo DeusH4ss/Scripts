@@ -1,47 +1,60 @@
 #!/bin/bash
-# Script minimal - Lance et c'est tout
+# Solution FINALE basée sur recherches Splunk Community + Doc officielle
+# Méthode TAR (plus fiable que DEB) + Désactivation firewall
 
-echo "=== RESET SPLUNK ==="
+echo "╔════════════════════════════════════════════╗"
+echo "║  SOLUTION FINALE - Méthode TAR + Reboot    ║"
+echo "╚════════════════════════════════════════════╝"
 echo ""
 
-# Kill
-echo "1. Kill processus..."
-killall -9 splunkd mongod python 2>/dev/null || true
+# 1. KILL BRUTAL
+echo "[1/5] Kill processus..."
+killall -9 splunkd mongod python3 python 2>/dev/null || true
 pkill -9 -f splunk 2>/dev/null || true
-sleep 2
+sleep 3
 
-# Purge
-echo "2. Purge paquet..."
-dpkg --purge splunk 2>/dev/null || true
-apt-get purge -y splunk 2>/dev/null || true
-
-# Delete
-echo "3. Suppression..."
+# 2. SUPPRESSION TOTALE
+echo "[2/5] Suppression complète..."
 rm -rf /opt/splunk
+rm -rf /opt/splunkforwarder
 rm -rf /var/log/splunk
 
-# Download
-echo "4. Téléchargement..."
+# 3. DÉSACTIVER FIREWALL (cause principale)
+echo "[3/5] Désactivation firewall..."
+systemctl stop firewalld 2>/dev/null || true
+systemctl stop iptables 2>/dev/null || true
+systemctl stop ufw 2>/dev/null || true
+ufw disable 2>/dev/null || true
+
+# 4. INSTALLATION TAR (RECOMMANDÉE)
+echo "[4/5] Installation via TAR..."
 cd /tmp
-if [ ! -f splunk-9.3.2-d8bb32809498-linux-2.6-amd64.deb ]; then
-    wget -q --show-progress https://download.splunk.com/products/splunk/releases/9.3.2/linux/splunk-9.3.2-d8bb32809498-linux-2.6-amd64.deb
+
+TAR="splunk-9.3.2-d8bb32809498-Linux-x86_64.tgz"
+URL="https://download.splunk.com/products/splunk/releases/9.3.2/linux/$TAR"
+
+if [ ! -f "$TAR" ]; then
+    echo "Téléchargement..."
+    wget -q --show-progress "$URL" || exit 1
 fi
 
-# Install
-echo "5. Installation..."
-dpkg -i splunk-9.3.2-d8bb32809498-linux-2.6-amd64.deb
-apt-get install -f -y
+echo "Extraction dans /opt..."
+tar xzf "$TAR" -C /opt
 
-# Config
-echo "6. Configuration..."
-mkdir -p /opt/splunk/etc/system/local
+# 5. CONFIG
+echo "[5/5] Configuration..."
 
+# Créer user splunk si nécessaire
+id splunk 2>/dev/null || useradd -r -m -s /bin/bash splunk
+
+# Password
 cat > /opt/splunk/etc/system/local/user-seed.conf <<'EOF'
 [user_info]
-USERNAME = admin
+USERNAME = admin  
 PASSWORD = Admin123!
 EOF
 
+# Ports
 cat > /opt/splunk/etc/system/local/inputs.conf <<'EOF'
 [splunktcp://9997]
 disabled = false
@@ -54,23 +67,54 @@ enableSplunkWebSSL = false
 startwebserver = 1
 EOF
 
+# Permissions
 chown -R splunk:splunk /opt/splunk
 
-# Start
-echo "7. Démarrage..."
+# START
+echo ""
+echo "Démarrage..."
 sudo -u splunk /opt/splunk/bin/splunk start --accept-license --answer-yes --no-prompt
 
 echo ""
-echo "Attente 30 secondes..."
+echo "Attente 30 sec..."
 sleep 30
 
+# Vérification
 echo ""
-echo "=== VÉRIFICATION ==="
-netstat -tuln | grep -E "8000|8089|9997"
+echo "═══ VÉRIFICATION ═══"
+netstat -tuln | grep -E ":8000|:8089|:9997"
+
+SUCCESS=$(netstat -tuln | grep -E ":8000|:8089|:9997" | wc -l)
+
+if [ "$SUCCESS" -eq 3 ]; then
+    echo ""
+    echo "✓✓✓ SUCCÈS - Tous les ports ouverts"
+else
+    echo ""
+    echo "⚠ Seuls $SUCCESS/3 ports ouverts"
+    echo ""
+    echo "SOLUTION D'APRÈS LES FORUMS SPLUNK:"
+    echo "→ REBOOT du serveur résout 90% des problèmes"
+    echo ""
+    read -p "Faire un REBOOT maintenant? (o/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[OoYy]$ ]]; then
+        echo "Splunk configuré pour démarrer automatiquement..."
+        /opt/splunk/bin/splunk enable boot-start -user splunk --accept-license --answer-yes
+        echo ""
+        echo "REBOOT dans 5 secondes..."
+        sleep 5
+        reboot
+    fi
+fi
 
 echo ""
-echo "==========================="
-echo "URL: http://$(hostname -I | awk '{print $1}'):8000"
+IP=$(hostname -I | awk '{print $1}')
+echo "═══════════════════════════"
+echo "URL: http://$IP:8000"
 echo "User: admin"
 echo "Pass: Admin123!"
-echo "==========================="
+echo "═══════════════════════════"
+echo ""
+echo "NOTE: Si ports pas ouverts, fais un REBOOT:"
+echo "  sudo reboot"

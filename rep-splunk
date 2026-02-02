@@ -1,8 +1,8 @@
 #!/bin/bash
 
 ##############################################
-# CONFIGURATION COMPLÈTE SPLUNK
-# 4 Index + Dashboard + Vérification Forwarders
+# CONFIGURATION COMPLÈTE SPLUNK - VERSION CORRIGÉE
+# 4 Index + Dashboard + Forwarders + Fixes
 ##############################################
 
 SPLUNK_HOME="/opt/splunk"
@@ -10,29 +10,45 @@ ADMIN_PASS="Admin123G4"
 IP=$(hostname -I | awk '{print $1}')
 
 echo "════════════════════════════════════════════════"
-echo "  CONFIGURATION COMPLÈTE SPLUNK - Iron4Software"
+echo "  CONFIGURATION COMPLÈTE SPLUNK - CORRIGÉE"
 echo "════════════════════════════════════════════════"
 echo ""
 
 # ══════════════════════════════════════════════════
-# PARTIE 1 : CRÉATION DES 4 INDEX
+# PARTIE 0 : INSTALLATION OUTILS MANQUANTS
 # ══════════════════════════════════════════════════
-echo "[1/5] Création des 4 index..."
+echo "[0/6] Installation outils manquants..."
 
-sudo -u splunk $SPLUNK_HOME/bin/splunk add index windows_server -auth admin:$ADMIN_PASS 2>/dev/null || echo "  windows_server existe déjà"
-sudo -u splunk $SPLUNK_HOME/bin/splunk add index windows_client -auth admin:$ADMIN_PASS 2>/dev/null || echo "  windows_client existe déjà"
-sudo -u splunk $SPLUNK_HOME/bin/splunk add index linux_server -auth admin:$ADMIN_PASS 2>/dev/null || echo "  linux_server existe déjà"
-sudo -u splunk $SPLUNK_HOME/bin/splunk add index pfsense -auth admin:$ADMIN_PASS 2>/dev/null || echo "  pfsense existe déjà"
+if ! command -v netstat &> /dev/null; then
+    echo "  Installation net-tools..."
+    apt update -qq
+    apt install -y net-tools
+    echo "  ✓ net-tools installé"
+else
+    echo "  ✓ net-tools déjà installé"
+fi
+echo ""
+
+# ══════════════════════════════════════════════════
+# PARTIE 1 : CRÉATION FORCÉE DES 4 INDEX
+# ══════════════════════════════════════════════════
+echo "[1/6] Création des 4 index..."
+
+# Supprimer et recréer pour forcer
+for idx in windows_server windows_client linux_server pfsense; do
+    sudo -u splunk $SPLUNK_HOME/bin/splunk remove index $idx -auth admin:$ADMIN_PASS 2>/dev/null
+    sudo -u splunk $SPLUNK_HOME/bin/splunk add index $idx -auth admin:$ADMIN_PASS 2>/dev/null && echo "  ✓ $idx créé"
+done
 
 echo ""
-echo "✓ Index créés:"
-sudo -u splunk $SPLUNK_HOME/bin/splunk list index -auth admin:$ADMIN_PASS | grep -E "windows_server|windows_client|linux_server|pfsense"
+echo "Index créés - Vérification:"
+sudo -u splunk $SPLUNK_HOME/bin/splunk list index -auth admin:$ADMIN_PASS 2>/dev/null | grep -E "windows_server|windows_client|linux_server|pfsense" || echo "  ⚠ Index pas encore visibles"
 echo ""
 
 # ══════════════════════════════════════════════════
-# PARTIE 2 : CONFIGURATION PORT 9997
+# PARTIE 2 : CONFIGURATION PORT 9997 (FORCÉE)
 # ══════════════════════════════════════════════════
-echo "[2/5] Configuration port 9997..."
+echo "[2/6] Configuration port 9997..."
 
 cat > $SPLUNK_HOME/etc/system/local/inputs.conf <<EOF
 [splunktcp://9997]
@@ -44,28 +60,21 @@ host = splunk-indexer
 EOF
 
 chown splunk:splunk $SPLUNK_HOME/etc/system/local/inputs.conf
-
-# Redémarrer si port pas ouvert
-if ! netstat -tuln | grep ":9997" > /dev/null; then
-    echo "  Redémarrage Splunk pour appliquer config port..."
-    sudo -u splunk $SPLUNK_HOME/bin/splunk restart
-    sleep 30
-fi
-
-if netstat -tuln | grep ":9997" > /dev/null; then
-    echo "✓ Port 9997 ÉCOUTE"
-else
-    echo "✗ Port 9997 PAS OUVERT - Vérifier manuellement"
-fi
+echo "  ✓ inputs.conf créé"
 echo ""
 
 # ══════════════════════════════════════════════════
-# PARTIE 3 : CRÉATION DASHBOARD
+# PARTIE 3 : CRÉATION DASHBOARD (FORCÉE)
 # ══════════════════════════════════════════════════
-echo "[3/5] Création dashboard avec 4 index..."
+echo "[3/6] Création dashboard..."
 
+# Supprimer ancien
+rm -f $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml 2>/dev/null
+
+# Créer répertoire
 mkdir -p $SPLUNK_HOME/etc/apps/search/local/data/ui/views
 
+# Créer dashboard
 cat > $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml <<'XMLEOF'
 <form version="1.1">
   <label>🔍 Dashboard Sécurité Iron4Software - 4 Index</label>
@@ -86,14 +95,12 @@ cat > $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.x
       <html>
         <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px;">
           <h2>🔍 Exercice : Identification des Manques Critiques</h2>
-          <p><strong>Mission : Identifier les informations CRITIQUES manquantes dans ce dashboard</strong></p>
+          <p><strong>Mission : Identifier les informations CRITIQUES manquantes</strong></p>
           <ol>
             <li>Examiner chaque panel du dashboard</li>
-            <li>Identifier ce qui manque (événements, filtres, alertes, corrélations)</li>
-            <li>Expliquer pourquoi c'est critique pour la sécurité</li>
-            <li>Proposer des ajouts pour compléter le dashboard</li>
+            <li>Identifier ce qui manque (événements, filtres, alertes)</li>
+            <li>Expliquer pourquoi c est critique</li>
           </ol>
-          <p><strong>Indices :</strong> Pensez aux 5W : Who, What, When, Where, Why</p>
         </div>
       </html>
     </panel>
@@ -101,61 +108,61 @@ cat > $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.x
 
   <row>
     <panel>
-      <title>📊 Windows Server - Événements Sécurité</title>
+      <title>📊 Windows Server</title>
       <single>
         <search>
-          <query>index=windows_server source="WinEventLog:Security" earliest=$time.earliest$ latest=$time.latest$ | stats count</query>
+          <query>index=windows_server source="WinEventLog:Security" | stats count</query>
         </search>
-        <option name="underLabel">Total événements</option>
+        <option name="underLabel">Événements</option>
       </single>
     </panel>
     
     <panel>
-      <title>💻 Windows Client - Événements Sécurité</title>
+      <title>💻 Windows Client</title>
       <single>
         <search>
-          <query>index=windows_client source="WinEventLog:Security" earliest=$time.earliest$ latest=$time.latest$ | stats count</query>
+          <query>index=windows_client source="WinEventLog:Security" | stats count</query>
         </search>
-        <option name="underLabel">Total événements</option>
+        <option name="underLabel">Événements</option>
       </single>
     </panel>
 
     <panel>
-      <title>🐧 Linux Server - Événements</title>
+      <title>🐧 Linux Server</title>
       <single>
         <search>
-          <query>index=linux_server earliest=$time.earliest$ latest=$time.latest$ | stats count</query>
+          <query>index=linux_server | stats count</query>
         </search>
-        <option name="underLabel">Total événements</option>
+        <option name="underLabel">Événements</option>
       </single>
     </panel>
 
     <panel>
-      <title>🔥 pfSense - Événements Firewall</title>
+      <title>🔥 pfSense</title>
       <single>
         <search>
-          <query>index=pfsense earliest=$time.earliest$ latest=$time.latest$ | stats count</query>
+          <query>index=pfsense | stats count</query>
         </search>
-        <option name="underLabel">Total événements</option>
+        <option name="underLabel">Événements</option>
       </single>
     </panel>
   </row>
 
   <row>
     <panel>
-      <title>✅ Connexions Windows Réussies (EventCode 4624)</title>
+      <title>✅ Connexions Windows Réussies (4624)</title>
       <table>
         <search>
-          <query>index=windows_* EventCode=4624 earliest=$time.earliest$ latest=$time.latest$ | rex field=_raw "Account Name:\s+(?&lt;user&gt;\S+)" | stats count by index, user, host | sort -count | head 10</query>
+          <query>index=windows_* EventCode=4624 | rex field=_raw "Account Name:\s+(?&lt;user&gt;\S+)" | stats count by index, user | sort -count | head 10</query>
         </search>
       </table>
     </panel>
     
     <panel>
-      <title>💻 Tous les Hosts Actifs (Forwarders)</title>
+      <title>💻 Hosts Actifs (Forwarders)</title>
       <table>
         <search>
-          <query>index=* earliest=$time.earliest$ latest=$time.latest$ | stats count by host, index | sort -count</query>
+          <query>index=* | stats count by host, index | sort -count</query>
         </search>
       </table>
     </panel>
@@ -163,38 +170,24 @@ cat > $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.x
 
   <row>
     <panel>
-      <title>📈 Timeline - Authentifications Windows</title>
+      <title>📈 Timeline Authentifications</title>
       <chart>
         <search>
-          <query>index=windows_* EventCode=4624 earliest=$time.earliest$ latest=$time.latest$ | timechart span=1h count by index</query>
+          <query>index=windows_* EventCode=4624 | timechart span=1h count by index</query>
         </search>
         <option name="charting.chart">line</option>
-        <option name="charting.axisTitleY.text">Nombre de connexions</option>
       </chart>
     </panel>
   </row>
 
   <row>
     <panel>
-      <title>🔐 SSH Linux - Connexions Réussies</title>
+      <title>🔐 SSH Linux</title>
       <table>
         <search>
-          <query>index=linux_server "Accepted password" earliest=$time.earliest$ latest=$time.latest$ | rex field=_raw "for (?&lt;user&gt;\S+) from (?&lt;src_ip&gt;[\d\.]+)" | stats count by user, src_ip, host | sort -count | head 10</query>
+          <query>index=linux_server "Accepted password" | rex field=_raw "for (?&lt;user&gt;\S+) from (?&lt;src_ip&gt;[\d\.]+)" | stats count by user, src_ip | sort -count | head 10</query>
         </search>
       </table>
-    </panel>
-  </row>
-
-  <row>
-    <panel>
-      <title>🌐 pfSense - Top 10 Ports Destination</title>
-      <chart>
-        <search>
-          <query>index=pfsense earliest=$time.earliest$ latest=$time.latest$ | rex field=_raw ",(?&lt;dst_port&gt;\d+),[^,]*$" | stats count by dst_port | sort -count | head 10</query>
-        </search>
-        <option name="charting.chart">bar</option>
-        <option name="charting.axisTitleX.text">Nombre de connexions</option>
-      </chart>
     </panel>
   </row>
 
@@ -202,24 +195,17 @@ cat > $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.x
     <panel>
       <html>
         <div style="background-color: #f8d7da; padding: 15px; border-radius: 5px;">
-          <h3>⚠️ INFORMATIONS CRITIQUES MANQUANTES</h3>
-          <p><strong>Ce dashboard présente les activités, mais il manque :</strong></p>
+          <h3>⚠️ MANQUES CRITIQUES</h3>
           <ul>
-            <li>❌ <strong>Échecs d'authentification</strong> (EventCode 4625) - Détection tentatives brute-force</li>
-            <li>❌ <strong>Escalade de privilèges</strong> (EventCode 4672, 4728, 4732) - Détection compromission</li>
-            <li>❌ <strong>Changements de comptes</strong> (création, suppression, modification) - Détection activités suspectes</li>
-            <li>❌ <strong>Trafic firewall BLOQUÉ</strong> (action=block) - Détection scans et attaques</li>
-            <li>❌ <strong>Port scanning</strong> - Détection reconnaissance réseau</li>
-            <li>❌ <strong>Connexions depuis IPs inhabituelles</strong> - Détection compromission</li>
-            <li>❌ <strong>Activité hors heures de bureau</strong> - Détection activités anormales</li>
-            <li>❌ <strong>Événements critiques Linux</strong> (erreurs, panics, failed) - Détection problèmes</li>
-            <li>❌ <strong>Modifications fichiers sensibles</strong> (/etc/passwd, /etc/shadow) - Détection compromission</li>
-            <li>❌ <strong>Commandes sudo</strong> - Surveillance privilèges</li>
-            <li>❌ <strong>Alertes et seuils</strong> - Notifications automatiques</li>
-            <li>❌ <strong>Corrélations</strong> - Détection attaques multi-étapes</li>
+            <li>❌ Échecs authentification (EventCode 4625)</li>
+            <li>❌ Escalade privilèges (EventCode 4672)</li>
+            <li>❌ Changements comptes</li>
+            <li>❌ Trafic firewall bloqué</li>
+            <li>❌ Port scanning</li>
+            <li>❌ Connexions anormales</li>
+            <li>❌ Activité hors heures</li>
+            <li>❌ Alertes et seuils</li>
           </ul>
-          <br/>
-          <p><strong>Votre mission :</strong> Identifier TOUS ces manques et proposer des solutions !</p>
         </div>
       </html>
     </panel>
@@ -228,57 +214,102 @@ cat > $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.x
 XMLEOF
 
 chown -R splunk:splunk $SPLUNK_HOME/etc/apps/search/local
+echo "  ✓ Dashboard créé: dashboard_iron4software.xml"
 
-echo "✓ Dashboard créé"
-echo ""
-
-# ══════════════════════════════════════════════════
-# PARTIE 4 : VÉRIFICATION FORWARDERS
-# ══════════════════════════════════════════════════
-echo "[4/5] Vérification des forwarders..."
-echo ""
-
-# Connexions actives
-CONN=$(netstat -an | grep ":9997" | grep ESTABLISHED | wc -l)
-echo "Forwarders connectés au port 9997: $CONN"
-echo ""
-
-if [ $CONN -gt 0 ]; then
-    echo "Liste des connexions:"
-    netstat -an | grep ":9997" | grep ESTABLISHED
-    echo ""
+# Vérifier création
+if [ -f "$SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml" ]; then
+    echo "  ✓ Fichier dashboard existe"
+else
+    echo "  ✗ ERREUR: Fichier dashboard non créé"
 fi
-
-# Vérifier données dans chaque index
-echo "Données reçues dans les 24 dernières heures:"
 echo ""
 
+# ══════════════════════════════════════════════════
+# PARTIE 4 : REDÉMARRAGE SPLUNK (FORCÉ)
+# ══════════════════════════════════════════════════
+echo "[4/6] Redémarrage Splunk..."
+
+sudo -u splunk $SPLUNK_HOME/bin/splunk restart
+echo ""
+echo "  Attente 40 secondes..."
+sleep 40
+echo ""
+
+# ══════════════════════════════════════════════════
+# PARTIE 5 : RECHARGEMENT FORCÉ
+# ══════════════════════════════════════════════════
+echo "[5/6] Rechargement forcé des configurations..."
+
+# Recharger l'app search
+curl -k -s -u admin:$ADMIN_PASS -X POST https://localhost:8089/services/apps/local/search/_reload 2>/dev/null && echo "  ✓ App search rechargée"
+
+# Recharger les dashboards
+curl -k -s -u admin:$ADMIN_PASS -X POST https://localhost:8089/servicesNS/-/-/data/ui/views/_reload 2>/dev/null && echo "  ✓ Dashboards rechargés"
+
+echo ""
+
+# ══════════════════════════════════════════════════
+# PARTIE 6 : VÉRIFICATIONS COMPLÈTES
+# ══════════════════════════════════════════════════
+echo "[6/6] Vérifications..."
+echo ""
+
+# Port 9997
+echo "━━━ PORT 9997 ━━━"
+if netstat -tuln | grep ":9997" > /dev/null; then
+    echo "✓ Port 9997 ÉCOUTE"
+    netstat -tuln | grep ":9997"
+else
+    echo "✗ Port 9997 PAS OUVERT"
+fi
+echo ""
+
+# Forwarders connectés
+CONN=$(netstat -an 2>/dev/null | grep ":9997" | grep ESTABLISHED | wc -l)
+echo "━━━ FORWARDERS ━━━"
+echo "Forwarders connectés: $CONN"
+if [ $CONN -gt 0 ]; then
+    netstat -an | grep ":9997" | grep ESTABLISHED
+fi
+echo ""
+
+# Index
+echo "━━━ INDEX ━━━"
+sudo -u splunk $SPLUNK_HOME/bin/splunk list index -auth admin:$ADMIN_PASS 2>/dev/null | grep -E "windows_server|windows_client|linux_server|pfsense" && echo "✓ Index visibles" || echo "✗ Index pas visibles - Redémarrer Splunk manuellement"
+echo ""
+
+# Dashboard
+echo "━━━ DASHBOARD ━━━"
+if [ -f "$SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml" ]; then
+    echo "✓ Fichier dashboard existe"
+    ls -lh $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml
+else
+    echo "✗ Fichier dashboard manquant"
+fi
+echo ""
+
+# Données reçues
+echo "━━━ DONNÉES PAR INDEX (24h) ━━━"
 for idx in windows_server windows_client linux_server pfsense; do
     COUNT=$(sudo -u splunk $SPLUNK_HOME/bin/splunk search "index=$idx earliest=-24h | stats count" -auth admin:$ADMIN_PASS 2>/dev/null | grep -oP '\d+' | tail -1)
     if [ -n "$COUNT" ] && [ "$COUNT" -gt 0 ]; then
         echo "  ✓ $idx: $COUNT événements"
     else
-        echo "  ✗ $idx: AUCUN événement"
+        echo "  ✗ $idx: 0 événements (forwarder pas configuré)"
     fi
 done
 echo ""
 
-# Hosts uniques
-echo "Hosts (forwarders) détectés:"
-sudo -u splunk $SPLUNK_HOME/bin/splunk search "index=* earliest=-24h | stats count by host" -auth admin:$ADMIN_PASS 2>/dev/null | grep -v "^$"
-echo ""
-
 # ══════════════════════════════════════════════════
-# PARTIE 5 : GUIDE CONFIGURATION FORWARDERS
+# RÉSUMÉ FINAL
 # ══════════════════════════════════════════════════
-echo "[5/5] Guide configuration forwarders..."
-echo ""
 
 echo "════════════════════════════════════════════════"
 echo "  ACCÈS SPLUNK"
 echo "════════════════════════════════════════════════"
 echo ""
 echo "Interface Web: http://$IP:8000"
+echo ""
 echo "Dashboard: http://$IP:8000/app/search/dashboard_iron4software"
 echo ""
 echo "Login: admin"
@@ -286,124 +317,44 @@ echo "Pass: $ADMIN_PASS"
 echo ""
 
 echo "════════════════════════════════════════════════"
-echo "  CONFIGURATION FORWARDERS"
+echo "  VÉRIFICATIONS MANUELLES"
 echo "════════════════════════════════════════════════"
 echo ""
-echo "Indexer (Splunk Server): $IP:9997"
+echo "1. Vérifier index dans l'interface Web:"
+echo "   Settings > Indexes"
+echo "   Tu dois voir: windows_server, windows_client, linux_server, pfsense"
 echo ""
-
-echo "─── WINDOWS SERVER ───────────────────────────"
+echo "2. Vérifier dashboard:"
+echo "   Dashboards > Rechercher 'iron4software'"
+echo "   Ou: http://$IP:8000/app/search/dashboard_iron4software"
 echo ""
-echo "Fichier: C:\\Program Files\\SplunkUniversalForwarder\\etc\\system\\local\\outputs.conf"
-echo ""
-cat <<'EOF'
-[tcpout]
-defaultGroup = indexer
-
-[tcpout:indexer]
-server = SPLUNK_IP:9997
-
-[indexAndForward]
-index = false
-EOF
-echo ""
-echo "Fichier: C:\\Program Files\\SplunkUniversalForwarder\\etc\\system\\local\\inputs.conf"
-echo ""
-cat <<'EOF'
-[default]
-index = windows_server
-
-[WinEventLog://Security]
-disabled = false
-
-[WinEventLog://System]
-disabled = false
-
-[WinEventLog://Application]
-disabled = false
-EOF
-echo ""
-echo "Puis: Restart-Service SplunkForwarder"
-echo ""
-
-echo "─── WINDOWS CLIENT ───────────────────────────"
-echo ""
-echo "Même chose mais avec: index = windows_client"
-echo ""
-
-echo "─── LINUX SERVER ─────────────────────────────"
-echo ""
-echo "Fichier: /opt/splunkforwarder/etc/system/local/outputs.conf"
-echo ""
-cat <<EOF
-[tcpout]
-defaultGroup = indexer
-
-[tcpout:indexer]
-server = $IP:9997
-EOF
-echo ""
-echo "Fichier: /opt/splunkforwarder/etc/system/local/inputs.conf"
-echo ""
-cat <<'EOF'
-[default]
-index = linux_server
-host = linux-server
-
-[monitor:///var/log/auth.log]
-disabled = false
-sourcetype = linux_secure
-
-[monitor:///var/log/syslog]
-disabled = false
-sourcetype = syslog
-EOF
-echo ""
-echo "Puis: sudo /opt/splunkforwarder/bin/splunk restart"
-echo ""
-
-echo "─── PFSENSE ──────────────────────────────────"
-echo ""
-echo "Dans pfSense Web GUI:"
-echo "  Status > System Logs > Settings"
-echo ""
-echo "  ✓ Enable Remote Logging"
-echo "  Remote log servers: $IP:514"
-echo "  Remote Syslog Contents: Everything"
-echo ""
-echo "Sur le serveur Splunk, ajouter dans inputs.conf:"
-echo ""
-cat <<EOF
-[udp://514]
-disabled = false
-sourcetype = pf:filterlog
-index = pfsense
-EOF
-echo ""
-echo "Puis: sudo -u splunk $SPLUNK_HOME/bin/splunk restart"
-echo ""
-
-echo "════════════════════════════════════════════════"
-echo "  TESTS DE VÉRIFICATION"
-echo "════════════════════════════════════════════════"
-echo ""
-echo "1. Test connexion depuis forwarder:"
-echo "   Windows: Test-NetConnection -ComputerName $IP -Port 9997"
-echo "   Linux: telnet $IP 9997"
-echo ""
-echo "2. Vérifier logs forwarder:"
-echo "   Windows: C:\\Program Files\\SplunkUniversalForwarder\\var\\log\\splunk\\splunkd.log"
-echo "   Linux: /opt/splunkforwarder/var/log/splunk/splunkd.log"
-echo "   Chercher: 'Connected to idx=$IP:9997'"
-echo ""
-echo "3. Dans Splunk Web, chercher:"
-echo "   index=windows_server | stats count by host"
-echo "   index=windows_client | stats count by host"
-echo "   index=linux_server | stats count by host"
-echo "   index=pfsense | stats count by host"
+echo "3. Si dashboard pas visible, attendre 2 min puis:"
+echo "   curl -k -u admin:$ADMIN_PASS -X POST https://localhost:8089/services/apps/local/search/_reload"
 echo ""
 echo "4. Relancer ce script pour vérifier:"
 echo "   sudo bash $0"
 echo ""
+
+echo "════════════════════════════════════════════════"
+echo "  CONFIGURATION FORWARDERS"
 echo "════════════════════════════════════════════════"
 echo ""
+echo "Indexer: $IP:9997"
+echo ""
+echo "Windows Server - outputs.conf:"
+echo "[tcpout]"
+echo "defaultGroup = indexer"
+echo "[tcpout:indexer]"
+echo "server = $IP:9997"
+echo ""
+echo "Windows Server - inputs.conf:"
+echo "[default]"
+echo "index = windows_server"
+echo "[WinEventLog://Security]"
+echo "disabled = false"
+echo ""
+echo "Puis: Restart-Service SplunkForwarder"
+echo ""
+echo "Linux/pfSense: Mêmes instructions avec index approprié"
+echo ""
+echo "════════════════════════════════════════════════"

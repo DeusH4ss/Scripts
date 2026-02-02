@@ -1,82 +1,84 @@
 #!/bin/bash
 
 ##############################################
-# CONFIGURATION COMPLÈTE SPLUNK - VERSION CORRIGÉE
-# 4 Index + Dashboard + Forwarders + Fixes
+# SOLUTION DÉFINITIVE - Index + Dashboard
+# Crée indexes.conf + Dashboard via API REST
 ##############################################
 
 SPLUNK_HOME="/opt/splunk"
 ADMIN_PASS="Admin123G4"
 IP=$(hostname -I | awk '{print $1}')
 
-echo "════════════════════════════════════════════════"
-echo "  CONFIGURATION COMPLÈTE SPLUNK - CORRIGÉE"
-echo "════════════════════════════════════════════════"
+echo "════════════════════════════════════════"
+echo "  SOLUTION DÉFINITIVE"
+echo "════════════════════════════════════════"
 echo ""
 
-# ══════════════════════════════════════════════════
-# PARTIE 0 : INSTALLATION OUTILS MANQUANTS
-# ══════════════════════════════════════════════════
-echo "[0/6] Installation outils manquants..."
+# ══════════════════════════════════════════
+# PARTIE 1 : CRÉER indexes.conf MANUELLEMENT
+# ══════════════════════════════════════════
+echo "[1/4] Création indexes.conf..."
 
-if ! command -v netstat &> /dev/null; then
-    echo "  Installation net-tools..."
-    apt update -qq
-    apt install -y net-tools
-    echo "  ✓ net-tools installé"
-else
-    echo "  ✓ net-tools déjà installé"
-fi
-echo ""
+cat > $SPLUNK_HOME/etc/system/local/indexes.conf <<'EOF'
+[windows_server]
+homePath = $SPLUNK_DB/windows_server/db
+coldPath = $SPLUNK_DB/windows_server/colddb
+thawedPath = $SPLUNK_DB/windows_server/thaweddb
+maxTotalDataSizeMB = 512000
+frozenTimePeriodInSecs = 188697600
 
-# ══════════════════════════════════════════════════
-# PARTIE 1 : CRÉATION FORCÉE DES 4 INDEX
-# ══════════════════════════════════════════════════
-echo "[1/6] Création des 4 index..."
+[windows_client]
+homePath = $SPLUNK_DB/windows_client/db
+coldPath = $SPLUNK_DB/windows_client/colddb
+thawedPath = $SPLUNK_DB/windows_client/thaweddb
+maxTotalDataSizeMB = 512000
+frozenTimePeriodInSecs = 188697600
 
-# Supprimer et recréer pour forcer
-for idx in windows_server windows_client linux_server pfsense; do
-    sudo -u splunk $SPLUNK_HOME/bin/splunk remove index $idx -auth admin:$ADMIN_PASS 2>/dev/null
-    sudo -u splunk $SPLUNK_HOME/bin/splunk add index $idx -auth admin:$ADMIN_PASS 2>/dev/null && echo "  ✓ $idx créé"
-done
+[linux_server]
+homePath = $SPLUNK_DB/linux_server/db
+coldPath = $SPLUNK_DB/linux_server/colddb
+thawedPath = $SPLUNK_DB/linux_server/thaweddb
+maxTotalDataSizeMB = 512000
+frozenTimePeriodInSecs = 188697600
 
-echo ""
-echo "Index créés - Vérification:"
-sudo -u splunk $SPLUNK_HOME/bin/splunk list index -auth admin:$ADMIN_PASS 2>/dev/null | grep -E "windows_server|windows_client|linux_server|pfsense" || echo "  ⚠ Index pas encore visibles"
-echo ""
-
-# ══════════════════════════════════════════════════
-# PARTIE 2 : CONFIGURATION PORT 9997 (FORCÉE)
-# ══════════════════════════════════════════════════
-echo "[2/6] Configuration port 9997..."
-
-cat > $SPLUNK_HOME/etc/system/local/inputs.conf <<EOF
-[splunktcp://9997]
-disabled = false
-connection_host = ip
-
-[default]
-host = splunk-indexer
+[pfsense]
+homePath = $SPLUNK_DB/pfsense/db
+coldPath = $SPLUNK_DB/pfsense/colddb
+thawedPath = $SPLUNK_DB/pfsense/thaweddb
+maxTotalDataSizeMB = 512000
+frozenTimePeriodInSecs = 188697600
 EOF
 
-chown splunk:splunk $SPLUNK_HOME/etc/system/local/inputs.conf
-echo "  ✓ inputs.conf créé"
+chown splunk:splunk $SPLUNK_HOME/etc/system/local/indexes.conf
+echo "✓ indexes.conf créé"
 echo ""
 
-# ══════════════════════════════════════════════════
-# PARTIE 3 : CRÉATION DASHBOARD (FORCÉE)
-# ══════════════════════════════════════════════════
-echo "[3/6] Création dashboard..."
+# ══════════════════════════════════════════
+# PARTIE 2 : REDÉMARRER SPLUNK
+# ══════════════════════════════════════════
+echo "[2/4] Redémarrage Splunk..."
 
-# Supprimer ancien
-rm -f $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml 2>/dev/null
+sudo -u splunk $SPLUNK_HOME/bin/splunk restart
+echo "Attente 40 secondes..."
+sleep 40
+echo "✓ OK"
+echo ""
 
-# Créer répertoire
-mkdir -p $SPLUNK_HOME/etc/apps/search/local/data/ui/views
+# ══════════════════════════════════════════
+# PARTIE 3 : CRÉER DASHBOARD VIA API REST
+# ══════════════════════════════════════════
+echo "[3/4] Création dashboard via API REST..."
 
-# Créer dashboard
-cat > $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml <<'XMLEOF'
-<form version="1.1">
+# Supprimer ancien dashboard
+curl -k -u "admin:$ADMIN_PASS" \
+  -X DELETE \
+  "https://localhost:8089/servicesNS/admin/search/data/ui/views/dashboard_iron4software" \
+  2>/dev/null
+
+sleep 2
+
+# Créer nouveau dashboard via API
+DASHBOARD_XML='<form version="1.1">
   <label>🔍 Dashboard Sécurité Iron4Software - 4 Index</label>
   <description>⚠️ Dashboard incomplet - Exercice de détection des manques critiques</description>
   
@@ -210,151 +212,104 @@ cat > $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.x
       </html>
     </panel>
   </row>
-</form>
-XMLEOF
+</form>'
 
-chown -R splunk:splunk $SPLUNK_HOME/etc/apps/search/local
-echo "  ✓ Dashboard créé: dashboard_iron4software.xml"
+# Créer via API
+RESPONSE=$(curl -k -s -u "admin:$ADMIN_PASS" \
+  -X POST \
+  "https://localhost:8089/servicesNS/admin/search/data/ui/views" \
+  --data-urlencode "name=dashboard_iron4software" \
+  --data-urlencode "eai:data=$DASHBOARD_XML" \
+  -w "\nHTTP:%{http_code}")
 
-# Vérifier création
-if [ -f "$SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml" ]; then
-    echo "  ✓ Fichier dashboard existe"
+HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP:" | cut -d':' -f2)
+
+if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+    echo "✓ Dashboard créé via API"
+    
+    # Définir permissions
+    curl -k -s -u "admin:$ADMIN_PASS" \
+      -X POST \
+      "https://localhost:8089/servicesNS/admin/search/data/ui/views/dashboard_iron4software/acl" \
+      -d "sharing=app" \
+      -d "owner=admin" \
+      -d "perms.read=*" \
+      > /dev/null
+    
+    echo "✓ Permissions configurées"
 else
-    echo "  ✗ ERREUR: Fichier dashboard non créé"
+    echo "⚠ Code HTTP: $HTTP_CODE"
+    echo "$RESPONSE" | grep -v "HTTP:"
 fi
 echo ""
 
-# ══════════════════════════════════════════════════
-# PARTIE 4 : REDÉMARRAGE SPLUNK (FORCÉ)
-# ══════════════════════════════════════════════════
-echo "[4/6] Redémarrage Splunk..."
-
-sudo -u splunk $SPLUNK_HOME/bin/splunk restart
-echo ""
-echo "  Attente 40 secondes..."
-sleep 40
+# ══════════════════════════════════════════
+# PARTIE 4 : VÉRIFICATIONS
+# ══════════════════════════════════════════
+echo "[4/4] Vérifications..."
 echo ""
 
-# ══════════════════════════════════════════════════
-# PARTIE 5 : RECHARGEMENT FORCÉ
-# ══════════════════════════════════════════════════
-echo "[5/6] Rechargement forcé des configurations..."
-
-# Recharger l'app search
-curl -k -s -u admin:$ADMIN_PASS -X POST https://localhost:8089/services/apps/local/search/_reload 2>/dev/null && echo "  ✓ App search rechargée"
-
-# Recharger les dashboards
-curl -k -s -u admin:$ADMIN_PASS -X POST https://localhost:8089/servicesNS/-/-/data/ui/views/_reload 2>/dev/null && echo "  ✓ Dashboards rechargés"
-
-echo ""
-
-# ══════════════════════════════════════════════════
-# PARTIE 6 : VÉRIFICATIONS COMPLÈTES
-# ══════════════════════════════════════════════════
-echo "[6/6] Vérifications..."
-echo ""
-
-# Port 9997
-echo "━━━ PORT 9997 ━━━"
-if netstat -tuln | grep ":9997" > /dev/null; then
-    echo "✓ Port 9997 ÉCOUTE"
-    netstat -tuln | grep ":9997"
-else
-    echo "✗ Port 9997 PAS OUVERT"
-fi
-echo ""
-
-# Forwarders connectés
-CONN=$(netstat -an 2>/dev/null | grep ":9997" | grep ESTABLISHED | wc -l)
-echo "━━━ FORWARDERS ━━━"
-echo "Forwarders connectés: $CONN"
-if [ $CONN -gt 0 ]; then
-    netstat -an | grep ":9997" | grep ESTABLISHED
-fi
-echo ""
-
-# Index
 echo "━━━ INDEX ━━━"
-sudo -u splunk $SPLUNK_HOME/bin/splunk list index -auth admin:$ADMIN_PASS 2>/dev/null | grep -E "windows_server|windows_client|linux_server|pfsense" && echo "✓ Index visibles" || echo "✗ Index pas visibles - Redémarrer Splunk manuellement"
-echo ""
-
-# Dashboard
-echo "━━━ DASHBOARD ━━━"
-if [ -f "$SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml" ]; then
-    echo "✓ Fichier dashboard existe"
-    ls -lh $SPLUNK_HOME/etc/apps/search/local/data/ui/views/dashboard_iron4software.xml
+if curl -k -s -u "admin:$ADMIN_PASS" \
+  "https://localhost:8089/services/data/indexes" | grep -q "windows_server"; then
+    echo "✓ windows_server visible"
 else
-    echo "✗ Fichier dashboard manquant"
+    echo "✗ windows_server pas visible"
+fi
+
+if curl -k -s -u "admin:$ADMIN_PASS" \
+  "https://localhost:8089/services/data/indexes" | grep -q "windows_client"; then
+    echo "✓ windows_client visible"
+else
+    echo "✗ windows_client pas visible"
+fi
+
+if curl -k -s -u "admin:$ADMIN_PASS" \
+  "https://localhost:8089/services/data/indexes" | grep -q "linux_server"; then
+    echo "✓ linux_server visible"
+else
+    echo "✗ linux_server pas visible"
+fi
+
+if curl -k -s -u "admin:$ADMIN_PASS" \
+  "https://localhost:8089/services/data/indexes" | grep -q "pfsense"; then
+    echo "✓ pfsense visible"
+else
+    echo "✗ pfsense pas visible"
 fi
 echo ""
 
-# Données reçues
-echo "━━━ DONNÉES PAR INDEX (24h) ━━━"
-for idx in windows_server windows_client linux_server pfsense; do
-    COUNT=$(sudo -u splunk $SPLUNK_HOME/bin/splunk search "index=$idx earliest=-24h | stats count" -auth admin:$ADMIN_PASS 2>/dev/null | grep -oP '\d+' | tail -1)
-    if [ -n "$COUNT" ] && [ "$COUNT" -gt 0 ]; then
-        echo "  ✓ $idx: $COUNT événements"
-    else
-        echo "  ✗ $idx: 0 événements (forwarder pas configuré)"
-    fi
-done
+echo "━━━ DASHBOARD ━━━"
+if curl -k -s -u "admin:$ADMIN_PASS" \
+  "https://localhost:8089/servicesNS/admin/search/data/ui/views/dashboard_iron4software" | grep -q "dashboard_iron4software"; then
+    echo "✓ Dashboard visible via API"
+else
+    echo "✗ Dashboard pas visible"
+fi
 echo ""
 
-# ══════════════════════════════════════════════════
-# RÉSUMÉ FINAL
-# ══════════════════════════════════════════════════
+echo "━━━ PORT 9997 ━━━"
+if netstat -tuln 2>/dev/null | grep ":9997" > /dev/null; then
+    echo "✓ Port 9997 ÉCOUTE"
+else
+    echo "✗ Port 9997 pas ouvert"
+fi
+echo ""
 
-echo "════════════════════════════════════════════════"
-echo "  ACCÈS SPLUNK"
-echo "════════════════════════════════════════════════"
+echo "════════════════════════════════════════"
+echo "  ACCÈS"
+echo "════════════════════════════════════════"
 echo ""
-echo "Interface Web: http://$IP:8000"
-echo ""
+echo "Interface: http://$IP:8000"
 echo "Dashboard: http://$IP:8000/app/search/dashboard_iron4software"
 echo ""
 echo "Login: admin"
 echo "Pass: $ADMIN_PASS"
 echo ""
-
-echo "════════════════════════════════════════════════"
-echo "  VÉRIFICATIONS MANUELLES"
-echo "════════════════════════════════════════════════"
+echo "Dans l'interface web :"
+echo "  - Settings > Indexes → Tu dois voir les 4 index"
+echo "  - Dashboards → Cherche 'iron4software'"
 echo ""
-echo "1. Vérifier index dans l'interface Web:"
-echo "   Settings > Indexes"
-echo "   Tu dois voir: windows_server, windows_client, linux_server, pfsense"
+echo "Si toujours pas visible, attendre 2 min"
+echo "puis F5 (rafraîchir) le navigateur"
 echo ""
-echo "2. Vérifier dashboard:"
-echo "   Dashboards > Rechercher 'iron4software'"
-echo "   Ou: http://$IP:8000/app/search/dashboard_iron4software"
-echo ""
-echo "3. Si dashboard pas visible, attendre 2 min puis:"
-echo "   curl -k -u admin:$ADMIN_PASS -X POST https://localhost:8089/services/apps/local/search/_reload"
-echo ""
-echo "4. Relancer ce script pour vérifier:"
-echo "   sudo bash $0"
-echo ""
-
-echo "════════════════════════════════════════════════"
-echo "  CONFIGURATION FORWARDERS"
-echo "════════════════════════════════════════════════"
-echo ""
-echo "Indexer: $IP:9997"
-echo ""
-echo "Windows Server - outputs.conf:"
-echo "[tcpout]"
-echo "defaultGroup = indexer"
-echo "[tcpout:indexer]"
-echo "server = $IP:9997"
-echo ""
-echo "Windows Server - inputs.conf:"
-echo "[default]"
-echo "index = windows_server"
-echo "[WinEventLog://Security]"
-echo "disabled = false"
-echo ""
-echo "Puis: Restart-Service SplunkForwarder"
-echo ""
-echo "Linux/pfSense: Mêmes instructions avec index approprié"
-echo ""
-echo "════════════════════════════════════════════════"

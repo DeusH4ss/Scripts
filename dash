@@ -1,0 +1,194 @@
+#!/bin/bash
+
+##############################################
+# CRÉATION DASHBOARD VISIBLE - owner=nobody
+##############################################
+
+SPLUNK_HOME="/opt/splunk"
+ADMIN_PASS="Admin123G4"
+IP=$(hostname -I | awk '{print $1}')
+
+echo "════════════════════════════════════════"
+echo "  CRÉATION DASHBOARD (owner=nobody)"
+echo "════════════════════════════════════════"
+echo ""
+
+# Supprimer ancien dashboard
+echo "[1/2] Suppression ancien dashboard..."
+curl -k -s -u "admin:$ADMIN_PASS" \
+  -X DELETE \
+  "https://localhost:8089/servicesNS/nobody/search/data/ui/views/dashboard_iron4software" \
+  2>/dev/null
+
+sleep 2
+echo "✓ OK"
+echo ""
+
+# Créer dashboard via API avec owner=nobody
+echo "[2/2] Création dashboard (owner=nobody)..."
+
+DASHBOARD_XML='<form version="1.1">
+  <label>🔍 Dashboard Sécurité Iron4Software</label>
+  <description>⚠️ Dashboard incomplet - Exercice des manques critiques</description>
+  
+  <fieldset submitButton="false">
+    <input type="time" token="time">
+      <label>Période</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+
+  <row>
+    <panel>
+      <html>
+        <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px;">
+          <h2>🔍 Exercice : Identification des Manques Critiques</h2>
+          <p><strong>Mission :</strong> Identifier les informations CRITIQUES manquantes</p>
+        </div>
+      </html>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>📊 Windows Server</title>
+      <single>
+        <search>
+          <query>index=windows_server source="WinEventLog:Security" | stats count</query>
+        </search>
+      </single>
+    </panel>
+    
+    <panel>
+      <title>💻 Windows Client</title>
+      <single>
+        <search>
+          <query>index=windows_client source="WinEventLog:Security" | stats count</query>
+        </search>
+      </single>
+    </panel>
+
+    <panel>
+      <title>🐧 Linux Server</title>
+      <single>
+        <search>
+          <query>index=linux_server | stats count</query>
+        </search>
+      </single>
+    </panel>
+
+    <panel>
+      <title>🔥 pfSense</title>
+      <single>
+        <search>
+          <query>index=pfsense | stats count</query>
+        </search>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>✅ Connexions Windows (4624)</title>
+      <table>
+        <search>
+          <query>index=windows_* EventCode=4624 | rex field=_raw "Account Name:\s+(?&lt;user&gt;\S+)" | stats count by index, user | sort -count | head 10</query>
+        </search>
+      </table>
+    </panel>
+    
+    <panel>
+      <title>💻 Forwarders Actifs</title>
+      <table>
+        <search>
+          <query>index=* | stats count by host, index | sort -count</query>
+        </search>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <html>
+        <div style="background-color: #f8d7da; padding: 15px;">
+          <h3>⚠️ MANQUES CRITIQUES</h3>
+          <ul>
+            <li>❌ Échecs authentification (4625)</li>
+            <li>❌ Escalade privilèges (4672)</li>
+            <li>❌ Trafic bloqué firewall</li>
+            <li>❌ Port scanning</li>
+            <li>❌ Alertes</li>
+          </ul>
+        </div>
+      </html>
+    </panel>
+  </row>
+</form>'
+
+# Créer via API avec servicesNS/nobody/search
+RESPONSE=$(curl -k -s -u "admin:$ADMIN_PASS" \
+  -X POST \
+  "https://localhost:8089/servicesNS/nobody/search/data/ui/views" \
+  --data-urlencode "name=dashboard_iron4software" \
+  --data-urlencode "eai:data=$DASHBOARD_XML" \
+  -w "\nHTTP:%{http_code}")
+
+HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP:" | cut -d':' -f2)
+
+if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+    echo "✓ Dashboard créé (owner=nobody)"
+    
+    sleep 2
+    
+    # Définir permissions app
+    curl -k -s -u "admin:$ADMIN_PASS" \
+      -X POST \
+      "https://localhost:8089/servicesNS/nobody/search/data/ui/views/dashboard_iron4software/acl" \
+      -d "sharing=app" \
+      -d "owner=nobody" \
+      -d "perms.read=*" \
+      -d "perms.write=admin,power" \
+      > /dev/null 2>&1
+    
+    echo "✓ Permissions configurées (sharing=app)"
+else
+    echo "⚠ Erreur création - Code HTTP: $HTTP_CODE"
+    echo "$RESPONSE" | grep -v "HTTP:"
+fi
+echo ""
+
+echo "════════════════════════════════════════"
+echo "  VÉRIFICATION"
+echo "════════════════════════════════════════"
+echo ""
+
+# Vérifier via API
+if curl -k -s -u "admin:$ADMIN_PASS" \
+  "https://localhost:8089/servicesNS/-/-/data/ui/views?search=dashboard_iron4software&output_mode=json" | grep -q "dashboard_iron4software"; then
+    echo "✓ Dashboard VISIBLE via API"
+else
+    echo "✗ Dashboard PAS VISIBLE"
+fi
+echo ""
+
+echo "════════════════════════════════════════"
+echo "  ACCÈS"
+echo "════════════════════════════════════════"
+echo ""
+echo "Interface: http://$IP:8000"
+echo ""
+echo "Dashboard: http://$IP:8000/app/search/dashboard_iron4software"
+echo ""
+echo "Login: admin / $ADMIN_PASS"
+echo ""
+echo "Dans l'interface :"
+echo "  Dashboards → Tu dois voir 'Dashboard Sécurité Iron4Software'"
+echo ""
+echo "Si pas encore visible:"
+echo "  1. Attends 1 minute"
+echo "  2. F5 (rafraîchir navigateur)"
+echo "  3. Déconnecte/reconnecte"
+echo ""

